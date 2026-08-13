@@ -186,7 +186,7 @@ int main(int argc,char **argv){
         {int eligible=1;for(ci=0;ci<source_map.class_count;++ci)if(baseline_map.per_class_ap[ci]+1e-7f<source_map.per_class_ap[ci])eligible=0;if(eligible&&baseline_map.map50>best_map){best=1;best_map=baseline_map.map50;}}
         {int eligible=1;for(ci=0;ci<source_map.class_count;++ci)if(adapted_map.per_class_ap[ci]+1e-7f<source_map.per_class_ap[ci])eligible=0;if(eligible&&adapted_map.map50>best_map){best=2;best_map=adapted_map.map50;}}
         printf("selection_score_threshold=%.6f selection_source_map50=%.6f selection_calibrated_map50=%.6f selection_adapted_map50=%.6f selection_decision=%s\n",selection_score,source_map.map50,baseline_map.map50,adapted_map.map50,best==2?"adapted":(best==1?"calibrated":"source"));
-        if(best==0){ed_model_free(serialized);ed_model_free(guard_model);ed_model_free(model);model=source_guard;source_guard=NULL;}
+        if(best==0){ed_model_free(serialized);ed_model_free(guard_model);guard_model=NULL;ed_model_free(model);model=source_guard;source_guard=NULL;}
         else if(best==1){ed_model_free(serialized);ed_model_free(source_guard);source_guard=NULL;ed_model_free(model);model=guard_model;guard_model=NULL;}
         else{ed_model_free(source_guard);source_guard=NULL;ed_model_free(guard_model);guard_model=NULL;ed_model_free(model);model=serialized;serialized=NULL;output_saved=1;}
     }
