@@ -1,0 +1,17 @@
+/build*/
+/visualizations/
+/*.edb
+/*.csv
+/*-adapted.edm
+/*-checkpoint-*.edm
+
+# Generated model artifacts. Keep only the documented distributable sources.
+/models/*.edm
+!/models/picodet_s_coco80_fp16.edm
+
+# Editor and OS metadata.
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

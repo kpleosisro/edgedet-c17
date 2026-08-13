@@ -1,0 +1,12 @@
+EdgeDet is an independent C17 implementation.
+
+The supported PicoDet architecture and pretrained artifact are derived from
+the published PP-PicoDet design and PaddleDetection model metadata. The
+PaddleDetection project is Copyright PaddlePaddle Authors and is distributed
+under the Apache License 2.0.
+
+No Ultralytics source code or model weights are included.
+
+Image decoding uses stb_image by Sean Barrett and contributors, distributed
+under its public-domain dedication or MIT license. The license text is retained
+in third_party/stb_image.h.
