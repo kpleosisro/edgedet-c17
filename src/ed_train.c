@@ -17,7 +17,8 @@ typedef struct {
 } head_parameter;
 typedef head_parameter context_parameter;
 typedef head_parameter spatial_parameter;
-typedef struct {int gt;float quality;} assignment;
+typedef head_parameter quality_parameter;
+typedef struct {int gt;float quality,target;} assignment;
 typedef struct {float x1,y1,x2,y2;uint32_t class_id;} train_box;
 typedef struct {
     float iou_power,center_radius,small_boost;
@@ -98,10 +99,10 @@ static uint32_t resolve_policy(const ed_train_config *c,float median,float aspec
     if(c->sample_mode>=ED_SAMPLE_FULL&&c->sample_mode<=ED_SAMPLE_ADAPT)return (uint32_t)c->sample_mode;
     if(c->mosaic_size==4u)return ED_SAMPLE_MOSAIC;
     if(c->mosaic_size==1u)return ED_SAMPLE_FULL;
-    /* Large targets keep their native context; small targets benefit from four
-       source images per frozen-backbone pass. */
+    /* Mosaic shrinks already-small boxes. Zoom crops around objects instead. */
     (void)aspect;
-    return median>=48.0f?ED_SAMPLE_FULL:ED_SAMPLE_MOSAIC;
+    if(median<48.0f)return ED_SAMPLE_ZOOM;
+    return ED_SAMPLE_FULL;
 }
 static assign_cfg resolve_assign(float median){
     assign_cfg a;
@@ -155,6 +156,18 @@ static int spatial_parameter_init(ed_model*m,spatial_parameter*p){
     static const char *bn[ED_PICODET_LEVELS]={"ed.picofeat.0.b","ed.picofeat.1.b","ed.picofeat.2.b","ed.picofeat.3.b"};
     uint32_t i;for(i=0;i<ED_PICODET_LEVELS;++i){size_t nw,nb;p[i].w=ed_find_tensor(m,wn[i]);p[i].b=ed_find_tensor(m,bn[i]);if(!p[i].w||!p[i].b)return 0;nw=(size_t)p[i].w->data_bytes/4u;nb=(size_t)p[i].b->data_bytes/4u;p[i].gw=(float*)calloc(nw,sizeof(float));p[i].gb=(float*)calloc(nb,sizeof(float));p[i].vw=(float*)calloc(nw,sizeof(float));p[i].vb=(float*)calloc(nb,sizeof(float));p[i].ema_w=(float*)calloc(nw,sizeof(float));p[i].ema_b=(float*)calloc(nb,sizeof(float));p[i].init_w=(float*)malloc(nw*sizeof(float));p[i].init_b=(float*)malloc(nb*sizeof(float));p[i].before_w=(float*)calloc(nw,sizeof(float));p[i].before_b=(float*)calloc(nb,sizeof(float));if(!p[i].gw||!p[i].gb||!p[i].vw||!p[i].vb||!p[i].ema_w||!p[i].ema_b||!p[i].init_w||!p[i].init_b||!p[i].before_w||!p[i].before_b)return 0;memcpy(p[i].init_w,p[i].w->data,nw*sizeof(float));memcpy(p[i].init_b,p[i].b->data,nb*sizeof(float));memcpy(p[i].ema_w,p[i].w->data,nw*sizeof(float));memcpy(p[i].ema_b,p[i].b->data,nb*sizeof(float));}return 1;
 }
+static int quality_model_add(ed_model*m){
+    static const char *wn[ED_PICODET_LEVELS]={"ed.quality.0.w","ed.quality.1.w","ed.quality.2.w","ed.quality.3.w"};
+    static const char *bn[ED_PICODET_LEVELS]={"ed.quality.0.b","ed.quality.1.b","ed.quality.2.b","ed.quality.3.b"};
+    ed_tensor *grown;uint32_t l,old;if(ed_find_tensor(m,wn[0])){for(l=0;l<ED_PICODET_LEVELS;++l)if(!ed_find_tensor(m,wn[l])||!ed_find_tensor(m,bn[l]))return 0;return 1;}old=m->tensor_count;grown=(ed_tensor*)realloc(m->tensors,(size_t)(old+2u*ED_PICODET_LEVELS)*sizeof(*grown));if(!grown)return 0;m->tensors=grown;memset(m->tensors+old,0,2u*ED_PICODET_LEVELS*sizeof(*grown));
+    for(l=0;l<ED_PICODET_LEVELS;++l){ed_tensor*w=&m->tensors[old+2u*l],*b=&m->tensors[old+2u*l+1u];strcpy(w->name,wn[l]);w->dtype=ED_PRECISION_FP32;w->rank=2;w->dims[0]=m->class_count;w->dims[1]=ED_HEAD_CHANNELS;w->dims[2]=w->dims[3]=1u;w->data_bytes=(uint64_t)m->class_count*ED_HEAD_CHANNELS*sizeof(float);w->data=calloc(1,(size_t)w->data_bytes);w->flags=1u;strcpy(b->name,bn[l]);b->dtype=ED_PRECISION_FP32;b->rank=1;b->dims[0]=m->class_count;b->dims[1]=b->dims[2]=b->dims[3]=1u;b->data_bytes=(uint64_t)m->class_count*sizeof(float);b->data=calloc(1,(size_t)b->data_bytes);b->flags=1u;if(!w->data||!b->data){m->tensor_count=old+2u*ED_PICODET_LEVELS;return 0;}}
+    m->tensor_count=old+2u*ED_PICODET_LEVELS;return 1;
+}
+static int quality_parameter_init(ed_model*m,quality_parameter*p){
+    static const char *wn[ED_PICODET_LEVELS]={"ed.quality.0.w","ed.quality.1.w","ed.quality.2.w","ed.quality.3.w"};
+    static const char *bn[ED_PICODET_LEVELS]={"ed.quality.0.b","ed.quality.1.b","ed.quality.2.b","ed.quality.3.b"};
+    uint32_t i;for(i=0;i<ED_PICODET_LEVELS;++i){size_t nw,nb;p[i].w=ed_find_tensor(m,wn[i]);p[i].b=ed_find_tensor(m,bn[i]);if(!p[i].w||!p[i].b)return 0;nw=(size_t)p[i].w->data_bytes/4u;nb=(size_t)p[i].b->data_bytes/4u;p[i].gw=(float*)calloc(nw,sizeof(float));p[i].gb=(float*)calloc(nb,sizeof(float));p[i].vw=(float*)calloc(nw,sizeof(float));p[i].vb=(float*)calloc(nb,sizeof(float));p[i].ema_w=(float*)calloc(nw,sizeof(float));p[i].ema_b=(float*)calloc(nb,sizeof(float));p[i].init_w=(float*)malloc(nw*sizeof(float));p[i].init_b=(float*)malloc(nb*sizeof(float));p[i].before_w=(float*)calloc(nw,sizeof(float));p[i].before_b=(float*)calloc(nb,sizeof(float));if(!p[i].gw||!p[i].gb||!p[i].vw||!p[i].vb||!p[i].ema_w||!p[i].ema_b||!p[i].init_w||!p[i].init_b||!p[i].before_w||!p[i].before_b)return 0;memcpy(p[i].init_w,p[i].w->data,nw*sizeof(float));memcpy(p[i].init_b,p[i].b->data,nb*sizeof(float));memcpy(p[i].ema_w,p[i].w->data,nw*sizeof(float));memcpy(p[i].ema_b,p[i].b->data,nb*sizeof(float));}return 1;
+}
 static void parameter_free(head_parameter *p){
     uint32_t i;for(i=0;i<8u;++i){free(p[i].gw);free(p[i].gb);free(p[i].vw);free(p[i].vb);free(p[i].ema_w);free(p[i].ema_b);free(p[i].init_w);free(p[i].init_b);free(p[i].before_w);free(p[i].before_b);}
 }
@@ -165,6 +178,8 @@ static void context_parameter_free(context_parameter*p){uint32_t i;for(i=0;i<ED_
 static void context_parameter_zero_grad(context_parameter*p){uint32_t i;for(i=0;i<ED_PICODET_LEVELS;++i){memset(p[i].gw,0,(size_t)p[i].w->data_bytes);memset(p[i].gb,0,(size_t)p[i].b->data_bytes);}}
 static void spatial_parameter_free(spatial_parameter*p){context_parameter_free(p);}
 static void spatial_parameter_zero_grad(spatial_parameter*p){context_parameter_zero_grad(p);}
+static void quality_parameter_free(quality_parameter*p){context_parameter_free(p);}
+static void quality_parameter_zero_grad(quality_parameter*p){context_parameter_zero_grad(p);}
 static float schedule_lr(const ed_train_config *c,uint64_t step,uint64_t elapsed_ms,uint64_t *warmup_end_ms){
     float lr,progress;
     if(step<10u)return c->learning_rate*((float)step+1.0f)/10.0f;
@@ -189,6 +204,7 @@ static void parameter_step_cross_level(head_parameter *p,const ed_train_config *
 }
 static float parameter_step(head_parameter *p,const ed_train_config *c,uint64_t step,uint64_t elapsed_ms,uint64_t *warmup_end_ms,float ema_decay,uint32_t class_count){
     uint32_t i;float base=schedule_lr(c,step,elapsed_ms,warmup_end_ms),dfl=c->dfl_lr_scale>0.0f?c->dfl_lr_scale:1.0f;
+    if(c->scope==ED_TRAIN_QUALITY)return base;
     if(c->head_adapter==ED_HEAD_ADAPTER_CROSS_LEVEL)parameter_step_cross_level(p,c,base,ema_decay,class_count);
     for(i=0;i<8u;++i){
         size_t j,nw=(size_t)p[i].w->data_bytes/4u,nb=(size_t)p[i].b->data_bytes/4u;
@@ -211,8 +227,10 @@ static float parameter_step(head_parameter *p,const ed_train_config *c,uint64_t 
 }
 static void context_parameter_step(context_parameter*p,const ed_train_config*c,float lr,float ema_decay,uint32_t class_count){uint32_t l,oc,k;for(l=0;l<ED_PICODET_LEVELS;++l){float*w=(float*)p[l].w->data,*b=(float*)p[l].b->data;for(oc=0;oc<class_count;++oc){float rate=lr*(c->class_lr_scale?c->class_lr_scale[oc]:1.0f);for(k=0;k<ED_HEAD_CHANNELS;++k){size_t i=(size_t)oc*ED_HEAD_CHANNELS+k;float g=p[l].gw[i]/(float)c->accumulation+c->weight_decay*w[i];p[l].vw[i]=c->momentum*p[l].vw[i]+g;w[i]-=rate*p[l].vw[i];p[l].ema_w[i]=ema_decay*p[l].ema_w[i]+(1.0f-ema_decay)*w[i];}{float g=p[l].gb[oc]/(float)c->accumulation;p[l].vb[oc]=c->momentum*p[l].vb[oc]+g;b[oc]-=rate*p[l].vb[oc];p[l].ema_b[oc]=ema_decay*p[l].ema_b[oc]+(1.0f-ema_decay)*b[oc];}}}}
 static void spatial_parameter_step(spatial_parameter*p,const ed_train_config*c,float lr,float ema_decay,uint32_t class_count){uint32_t l,oc;for(l=0;l<ED_PICODET_LEVELS;++l){float*w=(float*)p[l].w->data,*b=(float*)p[l].b->data;size_t wstride=((size_t)p[l].w->data_bytes/4u)/class_count,bstride=((size_t)p[l].b->data_bytes/4u)/class_count;for(oc=0;oc<class_count;++oc){float rate=lr*(c->class_lr_scale?c->class_lr_scale[oc]:1.0f);size_t k,begin=(size_t)oc*wstride,end=begin+wstride;for(k=begin;k<end;++k){float g=p[l].gw[k]/(float)c->accumulation+c->weight_decay*w[k];p[l].vw[k]=c->momentum*p[l].vw[k]+g;w[k]-=rate*p[l].vw[k];p[l].ema_w[k]=ema_decay*p[l].ema_w[k]+(1.0f-ema_decay)*w[k];}begin=(size_t)oc*bstride;end=begin+bstride;for(k=begin;k<end;++k){float g=p[l].gb[k]/(float)c->accumulation;p[l].vb[k]=c->momentum*p[l].vb[k]+g;b[k]-=rate*p[l].vb[k];p[l].ema_b[k]=ema_decay*p[l].ema_b[k]+(1.0f-ema_decay)*b[k];}}}}
+static void quality_parameter_step(quality_parameter*p,const ed_train_config*c,float lr,float ema_decay,uint32_t class_count){context_parameter_step(p,c,lr,ema_decay,class_count);}
 static void parameter_finalize(head_parameter *p,const ed_train_config *c,int use_ema,float wise){
     uint32_t i,class_count=p[0].b?p[0].b->dims[0]:0u;
+    if(c->scope==ED_TRAIN_QUALITY)return;
     if(wise<0.0f)wise=0.0f;if(wise>1.0f)wise=1.0f;
     for(i=0;i<8u;++i){
         size_t j,nw=(size_t)p[i].w->data_bytes/4u,nb=(size_t)p[i].b->data_bytes/4u;
@@ -234,6 +252,7 @@ static void parameter_finalize(head_parameter *p,const ed_train_config *c,int us
 }
 static void context_parameter_finalize(context_parameter*p,int use_ema,float wise){uint32_t l;for(l=0;l<ED_PICODET_LEVELS;++l){size_t i,nw=(size_t)p[l].w->data_bytes/4u,nb=(size_t)p[l].b->data_bytes/4u;float*w=(float*)p[l].w->data,*b=(float*)p[l].b->data;for(i=0;i<nw;++i){float trained=use_ema?p[l].ema_w[i]:w[i];w[i]=wise*trained+(1.0f-wise)*p[l].init_w[i];}for(i=0;i<nb;++i){float trained=use_ema?p[l].ema_b[i]:b[i];b[i]=wise*trained+(1.0f-wise)*p[l].init_b[i];}}}
 static void spatial_parameter_finalize(spatial_parameter*p,int use_ema,float wise){context_parameter_finalize(p,use_ema,wise);}
+static void quality_parameter_finalize(quality_parameter*p,int use_ema,float wise){context_parameter_finalize(p,use_ema,wise);}
 
 static void parameter_restart(head_parameter *p,const ed_train_config *c,int use_ema,float wise){
     uint32_t i;parameter_finalize(p,c,use_ema,wise);
@@ -243,6 +262,7 @@ static void parameter_restart(head_parameter *p,const ed_train_config *c,int use
 }
 static void context_parameter_restart(context_parameter*p,int use_ema,float wise){uint32_t l;context_parameter_finalize(p,use_ema,wise);for(l=0;l<ED_PICODET_LEVELS;++l){size_t nw=(size_t)p[l].w->data_bytes/4u,nb=(size_t)p[l].b->data_bytes/4u;float*w=(float*)p[l].w->data,*b=(float*)p[l].b->data;memcpy(p[l].init_w,w,nw*sizeof(float));memcpy(p[l].init_b,b,nb*sizeof(float));memcpy(p[l].ema_w,w,nw*sizeof(float));memcpy(p[l].ema_b,b,nb*sizeof(float));memset(p[l].vw,0,nw*sizeof(float));memset(p[l].vb,0,nb*sizeof(float));}}
 static void spatial_parameter_restart(spatial_parameter*p,int use_ema,float wise){context_parameter_restart(p,use_ema,wise);}
+static void quality_parameter_restart(quality_parameter*p,int use_ema,float wise){context_parameter_restart(p,use_ema,wise);}
 
 static int record_has_class(const ed_dataset *d,uint32_t index,uint32_t class_id){
     const uint8_t *bytes;const ed_edb_annotation_disk *a;uint32_t bytes_n,n,w,h,i;
@@ -252,11 +272,12 @@ static int record_has_class(const ed_dataset *d,uint32_t index,uint32_t class_id
 }
 static ed_status make_mosaic(const ed_dataset *d,uint64_t *rng,uint32_t sample_slot,ed_image *image,ed_edb_annotation_disk **out_a,uint32_t *out_n){
     uint8_t *canvas=(uint8_t*)calloc(320u*320u*3u,1);ed_edb_annotation_disk *all=NULL;uint32_t count=0,capacity=0,slot;
+    (void)rng;
     if(!canvas)return ED_ERR_MEMORY;
     for(slot=0;slot<4u;++slot){
-        uint32_t target=(sample_slot*4u+slot)%d->header.class_count,index=(uint32_t)(rng_next(rng)%d->header.record_count),attempt;
+        uint32_t target=(sample_slot*4u+slot)%d->header.class_count,index=(sample_slot*4u+slot)%d->header.record_count,attempt;
         const uint8_t *encoded;const ed_edb_annotation_disk *a;uint32_t encoded_n,n,w,h,j;uint8_t *rgb=NULL;ed_status s;
-        for(attempt=0;attempt<64u&&!record_has_class(d,index,target);++attempt)index=(uint32_t)(rng_next(rng)%d->header.record_count);
+        for(attempt=0;attempt<d->header.record_count&&!record_has_class(d,index,target);++attempt)index=(index+1u)%d->header.record_count;
         s=ed_dataset_record(d,index,&encoded,&encoded_n,&a,&n,&w,&h);if(s!=ED_OK){free(canvas);free(all);return s;}
         s=ed_decode_image(encoded,encoded_n,&rgb,&w,&h);if(s!=ED_OK){free(canvas);free(all);return s;}
         {uint32_t y,x,ox=(slot&1u)*160u,oy=(slot>>1u)*160u;
@@ -268,8 +289,10 @@ static ed_status make_mosaic(const ed_dataset *d,uint64_t *rng,uint32_t sample_s
     image->rgb=canvas;image->width=320u;image->height=320u;image->stride_bytes=960u;*out_a=all;*out_n=count;return ED_OK;
 }
 static ed_status make_single(const ed_dataset *d,uint64_t *rng,uint32_t sample_slot,ed_image *image,ed_edb_annotation_disk **out_a,uint32_t *out_n){
-    uint32_t target=sample_slot%d->header.class_count,index=(uint32_t)(rng_next(rng)%d->header.record_count),attempt,encoded_n,n,w,h;const uint8_t *encoded;const ed_edb_annotation_disk *a;uint8_t *rgb=NULL;ed_edb_annotation_disk *copy;ed_status s;
-    for(attempt=0;attempt<64u&&!record_has_class(d,index,target);++attempt)index=(uint32_t)(rng_next(rng)%d->header.record_count);
+    uint32_t target=sample_slot%d->header.class_count,index=(sample_slot*131u+17u)%d->header.record_count,initial=index,attempt,encoded_n,n,w,h;const uint8_t *encoded;const ed_edb_annotation_disk *a;uint8_t *rgb=NULL;ed_edb_annotation_disk *copy;ed_status s;
+    (void)rng;
+    if(d->header.class_count==1u){int want_positive=(sample_slot&1u)==0u;for(attempt=0;attempt<d->header.record_count&&(record_has_class(d,index,0u)!=want_positive);++attempt)index=(index+1u)%d->header.record_count;if(attempt==d->header.record_count)index=initial;}
+    else for(attempt=0;attempt<d->header.record_count&&!record_has_class(d,index,target);++attempt)index=(index+1u)%d->header.record_count;
     s=ed_dataset_record(d,index,&encoded,&encoded_n,&a,&n,&w,&h);if(s!=ED_OK)return s;
     s=ed_decode_image(encoded,encoded_n,&rgb,&w,&h);if(s!=ED_OK)return s;
     copy=(ed_edb_annotation_disk*)malloc((n?n:1u)*sizeof(*copy));if(!copy){free(rgb);return ED_ERR_MEMORY;}
@@ -356,15 +379,16 @@ static ed_status make_sample(const ed_dataset *d,uint64_t *rng,uint32_t policy,u
 }
 
 typedef struct {uint32_t gt_seen,gt_hit;float iou_sum;} assign_stats;
-static float train_activations(ed_model *m,const ed_image *image,const ed_edb_annotation_disk *anns,uint32_t ann_n,head_parameter *p,context_parameter *context,spatial_parameter *spatial,const ed_activation *a,const assign_cfg *cfg,const ed_train_config *cfg_train,assign_stats *st){
-    train_box *gt=NULL;uint32_t gt_n=0,l,total=0,g;assignment *as=NULL;float *class_target=NULL;float loss=0.0f;uint32_t positives=0;uint32_t *pos_per_class=NULL;
-    if(!load_boxes(anns,ann_n,image->width,image->height,&gt,&gt_n)||gt_n==0u){free(gt);return 0.0f;}
+static float train_activations(ed_model *m,const ed_image *image,const ed_edb_annotation_disk *anns,uint32_t ann_n,head_parameter *p,context_parameter *context,spatial_parameter *spatial,quality_parameter *quality,const ed_activation *a,const assign_cfg *cfg,const ed_train_config *cfg_train,assign_stats *st){
+    train_box *gt=NULL;uint32_t gt_n=0,l,total=0,g;assignment *as=NULL;float *class_target=NULL;float loss=0.0f,assigned_score_sum=0.0f;uint32_t positives=0;uint32_t *pos_per_class=NULL;
+    if(!load_boxes(anns,ann_n,image->width,image->height,&gt,&gt_n)||(gt_n==0u&&!(cfg_train&&cfg_train->aligned_loss))){free(gt);return 0.0f;}
     {uint32_t pi;for(pi=0;pi<8u;++pi){memcpy(p[pi].before_w,p[pi].gw,(size_t)p[pi].w->data_bytes);memcpy(p[pi].before_b,p[pi].gb,(size_t)p[pi].b->data_bytes);}}
     if(context){uint32_t pi;for(pi=0;pi<ED_PICODET_LEVELS;++pi){memcpy(context[pi].before_w,context[pi].gw,(size_t)context[pi].w->data_bytes);memcpy(context[pi].before_b,context[pi].gb,(size_t)context[pi].b->data_bytes);}}
     if(spatial){uint32_t pi;for(pi=0;pi<ED_PICODET_LEVELS;++pi){memcpy(spatial[pi].before_w,spatial[pi].gw,(size_t)spatial[pi].w->data_bytes);memcpy(spatial[pi].before_b,spatial[pi].gb,(size_t)spatial[pi].b->data_bytes);}}
+    if(quality){uint32_t pi;for(pi=0;pi<ED_PICODET_LEVELS;++pi){memcpy(quality[pi].before_w,quality[pi].gw,(size_t)quality[pi].w->data_bytes);memcpy(quality[pi].before_b,quality[pi].gb,(size_t)quality[pi].b->data_bytes);}}
     as=(assignment*)malloc(ED_LEVEL_LOCATIONS*sizeof(*as));class_target=(float*)calloc((size_t)ED_LEVEL_LOCATIONS*m->class_count,sizeof(*class_target));
     pos_per_class=(uint32_t*)calloc(m->class_count,sizeof(*pos_per_class));if(!as||!class_target||!pos_per_class)goto done;
-    for(g=0;g<ED_LEVEL_LOCATIONS;++g){as[g].gt=-1;as[g].quality=0.0f;}
+    for(g=0;g<ED_LEVEL_LOCATIONS;++g){as[g].gt=-1;as[g].quality=0.0f;as[g].target=0.0f;}
     for(g=0;g<gt_n;++g){
         float best_metric[ED_ASSIGN_MAX],best_iou[ED_ASSIGN_MAX],gw,gh,side,gcx,gcy;
         uint32_t best_index[ED_ASSIGN_MAX],best_n=0,base=0,topk;
@@ -393,10 +417,12 @@ static float train_activations(ed_model *m,const ed_image *image,const ed_edb_an
             }
             base+=rg->h*rg->w;
         }
-        {int hit=0;float best=0.0f;
-            for(l=0;l<best_n;++l)if(best_metric[l]>0.0f){size_t ct=(size_t)best_index[l]*m->class_count+gt[g].class_id;if(best_iou[l]>class_target[ct])class_target[ct]=best_iou[l];if(best_iou[l]>as[best_index[l]].quality){as[best_index[l]].gt=(int)g;as[best_index[l]].quality=best_iou[l];}if(best_iou[l]>best)best=best_iou[l];hit=1;}
+        {int hit=0;float best=0.0f,max_metric=0.0f,max_iou=0.0f;
+            for(l=0;l<best_n;++l)if(best_metric[l]>0.0f){if(best_metric[l]>max_metric)max_metric=best_metric[l];if(best_iou[l]>max_iou)max_iou=best_iou[l];}
+            for(l=0;l<best_n;++l)if(best_metric[l]>0.0f){float target=cfg_train&&cfg_train->aligned_loss?best_metric[l]*max_iou/(max_metric+1e-9f):best_iou[l];size_t ct=(size_t)best_index[l]*m->class_count+gt[g].class_id;if(!(cfg_train&&cfg_train->aligned_loss)&&best_iou[l]>class_target[ct])class_target[ct]=best_iou[l];if(best_iou[l]>as[best_index[l]].quality){as[best_index[l]].gt=(int)g;as[best_index[l]].quality=best_iou[l];as[best_index[l]].target=target;}if(best_iou[l]>best)best=best_iou[l];hit=1;}
             if(st){++st->gt_seen;if(hit){++st->gt_hit;st->iou_sum+=best;}}}
     }
+    if(cfg_train&&cfg_train->aligned_loss)for(g=0;g<ED_LEVEL_LOCATIONS;++g)if(as[g].gt>=0){uint32_t class_id=gt[as[g].gt].class_id;if(class_id<m->class_count)class_target[(size_t)g*m->class_count+class_id]=as[g].target;}
     total=0;
     for(l=0;l<ED_PICODET_LEVELS;++l){
         const ed_activation *feat=&a[ed_picodet_feature_nodes[l]],*raw=&a[ed_picodet_raw_cls_nodes[l]],*rg=&a[ed_picodet_reg_nodes[l]];
@@ -413,23 +439,36 @@ static float train_activations(ed_model *m,const ed_image *image,const ed_edb_an
             for(c=0;c<m->class_count;++c){
                 float z=raw->data[(size_t)local*m->class_count+c],pred=1.0f/(1.0f+expf(-z));
                 float target=class_target[((size_t)total+local)*m->class_count+c];
-                float weight=target>0.0f?target*box_w:0.75f*pred*pred,grad;
+                float weight,grad,quality_grad=0.0f;
                 if(ignore&&q.gt<0)continue;
-                if(cfg_train&&cfg_train->hard_neg_boost&&target<=0.0f&&q.gt>=0&&gt[q.gt].class_id!=c){
-                    float boost=pred>0.25f?2.0f*pred:pred;if(boost>weight)weight=boost;
+                if(cfg_train&&cfg_train->aligned_loss){
+                    const ed_activation *score=&a[ed_picodet_cls_nodes[l]];float aligned=clampf(score->data[(size_t)local*m->class_count+c],1e-6f,1.0f-1e-6f),dlds;
+                    weight=target>0.0f?target:0.75f*aligned*aligned;
+                    if(target>0.0f)dlds=weight*(aligned-target)/(aligned*(1.0f-aligned));
+                    else dlds=0.75f*(-2.0f*aligned*logf(1.0f-aligned)+aligned*aligned/(1.0f-aligned));
+                    if(cfg_train->hard_neg_boost&&target<=0.0f&&q.gt>=0&&gt[q.gt].class_id!=c){float boost=aligned>0.25f?2.0f*aligned:aligned;if(boost>weight){dlds*=boost/(weight+1e-9f);weight=boost;}}
+                    grad=dlds*0.5f*aligned*(1.0f-pred);
+                    if(quality){float adjusted_q=clampf((aligned*aligned)/(pred+1e-12f),1e-6f,1.0f-1e-6f);quality_grad=dlds*0.5f*aligned*(1.0f-adjusted_q);}
+                    loss-=weight*(target*logf(aligned)+(1.0f-target)*logf(1.0f-aligned));
+                }else{
+                    weight=target>0.0f?target*box_w:0.75f*pred*pred;
+                    if(cfg_train&&cfg_train->hard_neg_boost&&target<=0.0f&&q.gt>=0&&gt[q.gt].class_id!=c){float boost=pred>0.25f?2.0f*pred:pred;if(boost>weight)weight=boost;}
+                    grad=weight*(pred-target);
+                    loss-=weight*(target*logf(pred+1e-7f)+(1.0f-target)*logf(1.0f-pred+1e-7f));
                 }
-                grad=weight*(pred-target);
-                loss-=weight*(target*logf(pred+1e-7f)+(1.0f-target)*logf(1.0f-pred+1e-7f));
                 cp->gb[c]+=grad;for(k=0;k<ED_HEAD_CHANNELS;++k)cp->gw[(size_t)c*ED_HEAD_CHANNELS+k]+=grad*f[k];if(context){context[l].gb[c]+=grad;for(k=0;k<ED_HEAD_CHANNELS;++k)context[l].gw[(size_t)c*ED_HEAD_CHANNELS+k]+=grad*feature_mean[k];}
                 if(spatial){uint32_t ar;const float*aw=(const float*)spatial[l].w->data+((size_t)c*ED_FEATURE_ADAPTER_RANK)*ED_HEAD_CHANNELS;const float*bw=(const float*)spatial[l].b->data+(size_t)c*ED_FEATURE_ADAPTER_RANK;for(ar=0;ar<ED_FEATURE_ADAPTER_RANK;++ar){float h=0.0f;size_t bi=(size_t)c*ED_FEATURE_ADAPTER_RANK+ar;for(k=0;k<ED_HEAD_CHANNELS;++k)h+=aw[(size_t)ar*ED_HEAD_CHANNELS+k]*f[k];if(h>0.0f){spatial[l].gb[bi]+=grad*h;for(k=0;k<ED_HEAD_CHANNELS;++k)spatial[l].gw[((size_t)c*ED_FEATURE_ADAPTER_RANK+ar)*ED_HEAD_CHANNELS+k]+=grad*bw[ar]*f[k];}}}
+                if(quality){quality[l].gb[c]+=quality_grad;for(k=0;k<ED_HEAD_CHANNELS;++k)quality[l].gw[(size_t)c*ED_HEAD_CHANNELS+k]+=quality_grad*f[k];}
             }
             if(q.gt>=0){
                 if(gt[q.gt].class_id<m->class_count)++pos_per_class[gt[q.gt].class_id];
                 float box[4],dist[4],prob[32],target_dist[4],grad_dist[4];const float *logits=rg->data+(size_t)local*32u;
-                ++positives;decode_one(logits,cx,cy,stride,box,dist,prob);
+                float reg_weight=cfg_train&&cfg_train->aligned_loss?q.target*box_w:box_w;
+                float giou_scale=cfg_train&&cfg_train->aligned_loss?2.5f:1.0f,dfl_scale=cfg_train&&cfg_train->aligned_loss?0.5f:1.0f;
+                ++positives;if(cfg_train&&cfg_train->aligned_loss)assigned_score_sum+=q.target;decode_one(logits,cx,cy,stride,box,dist,prob);
                 target_dist[0]=(cx-gt[q.gt].x1)/stride;target_dist[1]=(cy-gt[q.gt].y1)/stride;
                 target_dist[2]=(gt[q.gt].x2-cx)/stride;target_dist[3]=(gt[q.gt].y2-cy)/stride;
-                loss+=box_w*giou_loss(box,&gt[q.gt]);
+                loss+=giou_scale*reg_weight*giou_loss(box,&gt[q.gt]);
                 for(c=0;c<4u;++c){
                     float old=dist[c],eps=0.01f,plus[4],minus[4];
                     memcpy(plus,box,sizeof(box));memcpy(minus,box,sizeof(box));
@@ -437,12 +476,12 @@ static float train_activations(ed_model *m,const ed_image *image,const ed_edb_an
                     if(c==1u){plus[1]-=eps*stride;minus[1]+=eps*stride;}
                     if(c==2u){plus[2]+=eps*stride;minus[2]-=eps*stride;}
                     if(c==3u){plus[3]+=eps*stride;minus[3]-=eps*stride;}
-                    grad_dist[c]=box_w*(giou_loss(plus,&gt[q.gt])-giou_loss(minus,&gt[q.gt]))/(2.0f*eps);
+                    grad_dist[c]=giou_scale*reg_weight*(giou_loss(plus,&gt[q.gt])-giou_loss(minus,&gt[q.gt]))/(2.0f*eps);
                     for(k=0;k<ED_REG_BINS;++k){
                         float td=target_dist[c];uint32_t lo=(uint32_t)(td<0.0f?0.0f:(td>7.0f?7.0f:floorf(td))),hi=lo<7u?lo+1u:lo;
                         float target=(k==lo?(float)hi-td:0.0f)+(k==hi?td-(float)lo:0.0f);if(lo==hi)target=k==lo?1.0f:0.0f;
-                        {float grad=box_w*(prob[c*8u+k]-target)+0.5f*grad_dist[c]*prob[c*8u+k]*((float)k-old);uint32_t oc=c*8u+k;
-                            loss-=box_w*target*logf(prob[c*8u+k]+1e-7f);rp->gb[oc]+=grad;
+                        {float chain=cfg_train&&cfg_train->aligned_loss?1.0f:0.5f;float grad=dfl_scale*reg_weight*(prob[c*8u+k]-target)+chain*grad_dist[c]*prob[c*8u+k]*((float)k-old);uint32_t oc=c*8u+k;
+                            loss-=dfl_scale*reg_weight*target*logf(prob[c*8u+k]+1e-7f);rp->gb[oc]+=grad;
                             {uint32_t ic;for(ic=0;ic<ED_HEAD_CHANNELS;++ic)rp->gw[(size_t)oc*ED_HEAD_CHANNELS+ic]+=grad*f[ic];}}
                     }
                 }
@@ -451,7 +490,7 @@ static float train_activations(ed_model *m,const ed_image *image,const ed_edb_an
         total+=rg->h*rg->w;
     }
     if(positives){
-        uint32_t pi;float scale=1.0f/(float)positives;
+        uint32_t pi;float normalizer=cfg_train&&cfg_train->aligned_loss?(assigned_score_sum>1.0f?assigned_score_sum:1.0f):(float)positives,scale=1.0f/normalizer;
         for(pi=0;pi<8u;++pi){
             size_t j;
             if(cfg_train&&cfg_train->class_loss_norm&&!(pi&1u)&&m->class_count>0u){
@@ -469,13 +508,14 @@ static float train_activations(ed_model *m,const ed_image *image,const ed_edb_an
         loss*=scale;
         if(context){uint32_t cl,oc,k;for(cl=0;cl<ED_PICODET_LEVELS;++cl)for(oc=0;oc<m->class_count;++oc){float cs=cfg_train&&cfg_train->class_loss_norm?1.0f/(float)(pos_per_class[oc]?pos_per_class[oc]:1u):scale;for(k=0;k<ED_HEAD_CHANNELS;++k){size_t i=(size_t)oc*ED_HEAD_CHANNELS+k;float delta=(context[cl].gw[i]-context[cl].before_w[i])*cs;if(delta>10.0f)delta=10.0f;if(delta<-10.0f)delta=-10.0f;context[cl].gw[i]=context[cl].before_w[i]+delta;}{float delta=(context[cl].gb[oc]-context[cl].before_b[oc])*cs;if(delta>10.0f)delta=10.0f;if(delta<-10.0f)delta=-10.0f;context[cl].gb[oc]=context[cl].before_b[oc]+delta;}}}
         if(spatial){uint32_t sl,oc;for(sl=0;sl<ED_PICODET_LEVELS;++sl){size_t wstride=((size_t)spatial[sl].w->data_bytes/4u)/m->class_count,bstride=((size_t)spatial[sl].b->data_bytes/4u)/m->class_count;for(oc=0;oc<m->class_count;++oc){float cs=cfg_train&&cfg_train->class_loss_norm?1.0f/(float)(pos_per_class[oc]?pos_per_class[oc]:1u):scale;size_t k,begin=(size_t)oc*wstride,end=begin+wstride;for(k=begin;k<end;++k){float delta=(spatial[sl].gw[k]-spatial[sl].before_w[k])*cs;if(delta>10.0f)delta=10.0f;if(delta<-10.0f)delta=-10.0f;spatial[sl].gw[k]=spatial[sl].before_w[k]+delta;}begin=(size_t)oc*bstride;end=begin+bstride;for(k=begin;k<end;++k){float delta=(spatial[sl].gb[k]-spatial[sl].before_b[k])*cs;if(delta>10.0f)delta=10.0f;if(delta<-10.0f)delta=-10.0f;spatial[sl].gb[k]=spatial[sl].before_b[k]+delta;}}}}
+        if(quality){uint32_t ql,oc,k;for(ql=0;ql<ED_PICODET_LEVELS;++ql)for(oc=0;oc<m->class_count;++oc){float cs=cfg_train&&cfg_train->class_loss_norm?1.0f/(float)(pos_per_class[oc]?pos_per_class[oc]:1u):scale;size_t begin=(size_t)oc*ED_HEAD_CHANNELS,end=begin+ED_HEAD_CHANNELS;for(k=(uint32_t)begin;k<(uint32_t)end;++k){float delta=(quality[ql].gw[k]-quality[ql].before_w[k])*cs;if(delta>10.0f)delta=10.0f;if(delta<-10.0f)delta=-10.0f;quality[ql].gw[k]=quality[ql].before_w[k]+delta;}{float delta=(quality[ql].gb[oc]-quality[ql].before_b[oc])*cs;if(delta>10.0f)delta=10.0f;if(delta<-10.0f)delta=-10.0f;quality[ql].gb[oc]=quality[ql].before_b[oc]+delta;}}}
     }
 done:free(pos_per_class);free(class_target);free(as);free(gt);return loss;
 }
 
-static float train_image(ed_model *m,const ed_image *image,const ed_edb_annotation_disk *anns,uint32_t ann_n,head_parameter *p,context_parameter *context,spatial_parameter *spatial,const assign_cfg *cfg,const ed_train_config *cfg_train,assign_stats *st){
+static float train_image(ed_model *m,const ed_image *image,const ed_edb_annotation_disk *anns,uint32_t ann_n,head_parameter *p,context_parameter *context,spatial_parameter *spatial,quality_parameter *quality,const assign_cfg *cfg,const ed_train_config *cfg_train,assign_stats *st){
     float *input=NULL;ed_activation *a=NULL;float loss=0.0f;
-    if(ed_prepare_input_320(image,&input)==ED_OK&&ed_graph_execute(m,input,&a)==ED_OK)loss=train_activations(m,image,anns,ann_n,p,context,spatial,a,cfg,cfg_train,st);
+    if(ed_prepare_input_320(image,&input)==ED_OK&&ed_graph_execute(m,input,&a)==ED_OK)loss=train_activations(m,image,anns,ann_n,p,context,spatial,quality,a,cfg,cfg_train,st);
     ed_graph_activations_free(a);free(input);return loss;
 }
 
@@ -519,7 +559,7 @@ static ed_status feature_cache_sample_build(const ed_model *m,const ed_dataset *
     if(status!=ED_OK)feature_cache_sample_free(s);
     return status;
 }
-static float train_feature_cache_sample(ed_model *m,const feature_cache_sample *s,head_parameter *p,context_parameter *context,spatial_parameter *spatial,const assign_cfg *cfg,const ed_train_config *cfg_train,assign_stats *st){
+static float train_feature_cache_sample(ed_model *m,const feature_cache_sample *s,head_parameter *p,context_parameter *context,spatial_parameter *spatial,quality_parameter *quality_adapter,const assign_cfg *cfg,const ed_train_config *cfg_train,assign_stats *st){
     ed_activation *a=(ed_activation*)calloc(ed_picodet_node_count,sizeof(*a));
     ed_image image;float loss=0.0f;uint32_t l;
     if(!a)return 0.0f;
@@ -540,76 +580,91 @@ static float train_feature_cache_sample(ed_model *m,const feature_cache_sample *
         ed_conv2d_f32(feature->data,h,w,ED_HEAD_CHANNELS,(const float*)p[l*2u+1u].w->data,(const float*)p[l*2u+1u].b->data,32u,1u,1u,0u,reg->data);
         for(c=0;c<locations*m->class_count;++c){float sigmoid=1.0f/(1.0f+expf(-raw->data[c]));score->data[c]=sqrtf(sigmoid*s->quality[l][c/m->class_count]);}
     }
-    if(ed_graph_apply_spatial(m,a)==ED_OK&&ed_graph_apply_context(m,a)==ED_OK)loss=train_activations(m,&image,s->annotations,s->annotation_count,p,context,spatial,a,cfg,cfg_train,st);
+    if(ed_graph_apply_spatial(m,a)==ED_OK&&ed_graph_apply_context(m,a)==ED_OK&&ed_graph_apply_quality(m,a)==ED_OK)loss=train_activations(m,&image,s->annotations,s->annotation_count,p,context,spatial,quality_adapter,a,cfg,cfg_train,st);
 done:
     for(l=0;l<ED_PICODET_LEVELS;++l){free(a[ed_picodet_raw_cls_nodes[l]].data);free(a[ed_picodet_reg_nodes[l]].data);free(a[ed_picodet_cls_nodes[l]].data);}
     free(a);return loss;
 }
 
 ed_status ed_train(ed_model *m,const ed_dataset *d,const ed_train_config *c,ed_train_report *r){
-    head_parameter parameters[8];context_parameter context[ED_PICODET_LEVELS],*context_ptr=NULL;spatial_parameter spatial[ED_PICODET_LEVELS],*spatial_ptr=NULL;feature_cache_sample *cache=NULL;ed_train_config phase_config;uint64_t start,deadline,rng,training_rng_start=0,next_checkpoint=10000u,warmup_end_ms=0,phase_start_ms=0,phase_steps=0;
+    head_parameter parameters[8];context_parameter context[ED_PICODET_LEVELS],*context_ptr=NULL;spatial_parameter spatial[ED_PICODET_LEVELS],*spatial_ptr=NULL;quality_parameter quality[ED_PICODET_LEVELS],*quality_ptr=NULL;feature_cache_sample *cache=NULL;ed_train_config phase_config;uint64_t start,deadline,rng,training_rng_start=0,next_checkpoint=10000u,warmup_end_ms=0,phase_start_ms=0,phase_steps=0;
     uint32_t accumulated=0,cache_count=0,policy;float loss=0.0f,median,ema_decay,wise;assign_cfg cfg;ed_status status=ED_OK;assign_stats stats={0};
     if(!m||!d||!c||!r||c->budget_ms==0u||c->threads==0u||(c->mosaic_size!=0u&&c->mosaic_size!=1u&&c->mosaic_size!=4u)||c->accumulation==0u||c->feature_cache_samples>256u)return ED_ERR_ARGUMENT;
-    if(c->scope!=ED_TRAIN_OUTPUTS&&c->scope!=ED_TRAIN_CLASSIFICATION)return ED_ERR_ARGUMENT;
+    if(c->scope!=ED_TRAIN_OUTPUTS&&c->scope!=ED_TRAIN_CLASSIFICATION&&c->scope!=ED_TRAIN_QUALITY)return ED_ERR_ARGUMENT;
     if(c->restart_after_steps&&(!c->max_optimizer_steps||c->restart_after_steps>=c->max_optimizer_steps))return ED_ERR_ARGUMENT;
-    if((unsigned)c->sample_mode>ED_SAMPLE_ADAPT||(c->checkpoint_storage&&(c->checkpoint_storage<ED_STORAGE_FP32||c->checkpoint_storage>ED_STORAGE_INT4))||(unsigned)c->head_adapter>ED_HEAD_ADAPTER_CROSS_LEVEL||(c->head_adapter==ED_HEAD_ADAPTER_CROSS_LEVEL&&(c->cross_level_mix<=0.0f||c->cross_level_mix>1.0f))||c->nesterov>1u||c->roi_head>1u||c->picofeat_adapter>1u)return ED_ERR_ARGUMENT;
+    if((unsigned)c->sample_mode>ED_SAMPLE_ADAPT||(c->checkpoint_storage&&(c->checkpoint_storage<ED_STORAGE_FP32||c->checkpoint_storage>ED_STORAGE_INT4))||(unsigned)c->head_adapter>ED_HEAD_ADAPTER_CROSS_LEVEL||(c->head_adapter==ED_HEAD_ADAPTER_CROSS_LEVEL&&(c->cross_level_mix<=0.0f||c->cross_level_mix>1.0f))||c->nesterov>1u||c->roi_head>1u||c->picofeat_adapter>1u||c->aligned_loss>1u||c->quality_adapter>1u||(c->quality_adapter&&!c->aligned_loss)||(c->scope==ED_TRAIN_QUALITY&&!c->quality_adapter))return ED_ERR_ARGUMENT;
     if(m->class_count!=d->header.class_count)return ED_ERR_FORMAT;
     {uint32_t ci;for(ci=0;ci<m->class_count;++ci)if(strncmp(m->class_names[ci],d->class_names[ci],ED_CLASS_NAME_BYTES)!=0)return ED_ERR_FORMAT;}
     if(ed_runtime_set_threads(c->threads)!=ED_OK)return ED_ERR_MEMORY;
-    memset(r,0,sizeof(*r));memset(parameters,0,sizeof(parameters));memset(context,0,sizeof(context));memset(spatial,0,sizeof(spatial));if(c->roi_head){if(!context_model_add(m)||!context_parameter_init(m,context)){context_parameter_free(context);return ED_ERR_MEMORY;}context_ptr=context;}if(c->picofeat_adapter){if(!spatial_model_add(m)||!spatial_parameter_init(m,spatial)){spatial_parameter_free(spatial);context_parameter_free(context);return ED_ERR_MEMORY;}spatial_ptr=spatial;}if(!parameter_init(m,parameters)){spatial_parameter_free(spatial);context_parameter_free(context);parameter_free(parameters);return ED_ERR_FORMAT;}
+    memset(r,0,sizeof(*r));memset(parameters,0,sizeof(parameters));memset(context,0,sizeof(context));memset(spatial,0,sizeof(spatial));memset(quality,0,sizeof(quality));
+    if((c->roi_head&&!context_model_add(m))||(c->picofeat_adapter&&!spatial_model_add(m))||(c->quality_adapter&&!quality_model_add(m)))return ED_ERR_MEMORY;
+    if(c->roi_head){if(!context_parameter_init(m,context)){context_parameter_free(context);return ED_ERR_MEMORY;}context_ptr=context;}
+    if(c->picofeat_adapter){if(!spatial_parameter_init(m,spatial)){spatial_parameter_free(spatial);context_parameter_free(context);return ED_ERR_MEMORY;}spatial_ptr=spatial;}
+    if(c->quality_adapter){if(!quality_parameter_init(m,quality)){quality_parameter_free(quality);spatial_parameter_free(spatial);context_parameter_free(context);return ED_ERR_MEMORY;}quality_ptr=quality;}
+    if(!parameter_init(m,parameters)){quality_parameter_free(quality);spatial_parameter_free(spatial);context_parameter_free(context);parameter_free(parameters);return ED_ERR_FORMAT;}
     r->trainable_parameters=0;
-    if(c->head_adapter==ED_HEAD_ADAPTER_CROSS_LEVEL&&c->cross_level_mix>=0.999f){uint32_t i;r->trainable_parameters=(uint64_t)m->class_count*(ED_HEAD_CHANNELS+ED_PICODET_LEVELS);if(c->scope!=ED_TRAIN_CLASSIFICATION)for(i=1u;i<8u;i+=2u)r->trainable_parameters+=(parameters[i].w->data_bytes+parameters[i].b->data_bytes)/4u;}
-    else{uint32_t i;for(i=0;i<8u;++i)if(c->scope!=ED_TRAIN_CLASSIFICATION||!(i&1u))r->trainable_parameters+=(parameters[i].w->data_bytes+parameters[i].b->data_bytes)/4u;}
-    if(context_ptr)r->trainable_parameters+=(uint64_t)ED_PICODET_LEVELS*m->class_count*(ED_HEAD_CHANNELS+1u);
-    if(spatial_ptr)r->trainable_parameters+=(uint64_t)ED_PICODET_LEVELS*m->class_count*ED_FEATURE_ADAPTER_RANK*(ED_HEAD_CHANNELS+1u);
+    if(c->scope!=ED_TRAIN_QUALITY){if(c->head_adapter==ED_HEAD_ADAPTER_CROSS_LEVEL&&c->cross_level_mix>=0.999f){uint32_t i;r->trainable_parameters=(uint64_t)m->class_count*(ED_HEAD_CHANNELS+ED_PICODET_LEVELS);if(c->scope!=ED_TRAIN_CLASSIFICATION)for(i=1u;i<8u;i+=2u)r->trainable_parameters+=(parameters[i].w->data_bytes+parameters[i].b->data_bytes)/4u;}
+        else{uint32_t i;for(i=0;i<8u;++i)if(c->scope!=ED_TRAIN_CLASSIFICATION||!(i&1u))r->trainable_parameters+=(parameters[i].w->data_bytes+parameters[i].b->data_bytes)/4u;}}
+    if(context_ptr&&c->scope!=ED_TRAIN_QUALITY)r->trainable_parameters+=(uint64_t)ED_PICODET_LEVELS*m->class_count*(ED_HEAD_CHANNELS+1u);
+    if(spatial_ptr&&c->scope!=ED_TRAIN_QUALITY)r->trainable_parameters+=(uint64_t)ED_PICODET_LEVELS*m->class_count*ED_FEATURE_ADAPTER_RANK*(ED_HEAD_CHANNELS+1u);
+    if(quality_ptr)r->trainable_parameters+=(uint64_t)ED_PICODET_LEVELS*m->class_count*(ED_HEAD_CHANNELS+1u);
     median=dataset_median_side(d);policy=resolve_policy(c,median,dataset_mean_aspect(d));cfg=resolve_assign(median);
     r->sample_mode_used=policy;r->median_box_side=median;
     ema_decay=(c->ema_decay>0.0f&&c->ema_decay<1.0f)?c->ema_decay:1.0f;
     wise=(c->wise_mix>0.0f&&c->wise_mix<1.0f)?c->wise_mix:1.0f;
     phase_config=*c;if(c->restart_after_steps)phase_config.max_optimizer_steps=c->restart_after_steps;
-    start=ed_monotonic_ms();deadline=start+c->budget_ms;rng=c->seed?c->seed:1u;parameter_zero_grad(parameters);if(context_ptr)context_parameter_zero_grad(context);if(spatial_ptr)spatial_parameter_zero_grad(spatial);
+    start=ed_monotonic_ms();deadline=start+c->budget_ms;rng=c->seed?c->seed:1u;parameter_zero_grad(parameters);if(context_ptr)context_parameter_zero_grad(context);if(spatial_ptr)spatial_parameter_zero_grad(spatial);if(quality_ptr)quality_parameter_zero_grad(quality);
     if(c->feature_cache_samples){
+        uint64_t cache_start=ed_monotonic_ms(),cache_reserve=c->budget_ms/5u,cache_deadline;
+        if(cache_reserve<1000u)cache_reserve=1000u;
+        cache_deadline=deadline>cache_reserve?deadline-cache_reserve:start;
         cache=(feature_cache_sample*)calloc(c->feature_cache_samples,sizeof(*cache));
         if(!cache){status=ED_ERR_MEMORY;goto done;}
-        while(cache_count<c->feature_cache_samples&&ed_monotonic_ms()+1000u<deadline){
+        while(cache_count<c->feature_cache_samples){
+            uint64_t now=ed_monotonic_ms(),estimate=cache_count?(now-cache_start+cache_count-1u)/cache_count:1000u;
+            if(estimate<1u)estimate=1u;if(now+estimate>=cache_deadline)break;
             (void)rng_next(&rng);
             status=feature_cache_sample_build(m,d,&rng,policy,cache_count,&cache[cache_count]);
             if(status!=ED_OK)goto done;++cache_count;
         }
+        r->feature_cache_samples=cache_count;r->feature_cache_ms=ed_monotonic_ms()-cache_start;
         if(cache_count==0u){status=ED_ERR_DEADLINE;goto done;}
     }
     training_rng_start=rng;
     while(ed_monotonic_ms()+1000u<deadline&&(!c->max_optimizer_steps||r->optimizer_steps<c->max_optimizer_steps)){
         ed_edb_annotation_disk *anns=NULL;uint32_t ann_n=0;ed_image image;
-        if(cache_count){uint32_t selected=(uint32_t)(rng_next(&rng)%cache_count);loss=train_feature_cache_sample(m,&cache[selected],parameters,context_ptr,spatial_ptr,&cfg,c,&stats);}
+        if(cache_count){uint32_t selected=(uint32_t)(rng_next(&rng)%cache_count);loss=train_feature_cache_sample(m,&cache[selected],parameters,context_ptr,spatial_ptr,quality_ptr,&cfg,c,&stats);}
         else{
             status=make_sample(d,&rng,policy,(uint32_t)r->mosaics_seen,&image,&anns,&ann_n);if(status!=ED_OK)break;
-            loss=train_image(m,&image,anns,ann_n,parameters,context_ptr,spatial_ptr,&cfg,c,&stats);free((void*)image.rgb);free(anns);
+            loss=train_image(m,&image,anns,ann_n,parameters,context_ptr,spatial_ptr,quality_ptr,&cfg,c,&stats);free((void*)image.rgb);free(anns);
         }
         r->images_seen+=(policy==ED_SAMPLE_MOSAIC||policy==ED_SAMPLE_ADAPT)?4u:1u;++r->mosaics_seen;++accumulated;
         if(accumulated==c->accumulation){
-            float step_lr=parameter_step(parameters,&phase_config,phase_steps,ed_monotonic_ms()-start-phase_start_ms,&warmup_end_ms,ema_decay,m->class_count);if(context_ptr)context_parameter_step(context,c,step_lr,ema_decay,m->class_count);if(spatial_ptr)spatial_parameter_step(spatial,c,step_lr,ema_decay,m->class_count);
-            parameter_zero_grad(parameters);if(context_ptr)context_parameter_zero_grad(context);if(spatial_ptr)spatial_parameter_zero_grad(spatial);accumulated=0;++r->optimizer_steps;++phase_steps;
-            if(c->restart_after_steps&&r->optimizer_steps==c->restart_after_steps){parameter_restart(parameters,c,ema_decay<1.0f,wise);if(context_ptr)context_parameter_restart(context,ema_decay<1.0f,wise);if(spatial_ptr)spatial_parameter_restart(spatial,ema_decay<1.0f,wise);phase_config=*c;phase_config.max_optimizer_steps=c->max_optimizer_steps-c->restart_after_steps;phase_steps=0;phase_start_ms=ed_monotonic_ms()-start;warmup_end_ms=0;rng=training_rng_start;}
+            float step_lr=parameter_step(parameters,&phase_config,phase_steps,ed_monotonic_ms()-start-phase_start_ms,&warmup_end_ms,ema_decay,m->class_count);if(context_ptr&&c->scope!=ED_TRAIN_QUALITY)context_parameter_step(context,c,step_lr,ema_decay,m->class_count);if(spatial_ptr&&c->scope!=ED_TRAIN_QUALITY)spatial_parameter_step(spatial,c,step_lr,ema_decay,m->class_count);if(quality_ptr)quality_parameter_step(quality,c,step_lr,ema_decay,m->class_count);
+            parameter_zero_grad(parameters);if(context_ptr)context_parameter_zero_grad(context);if(spatial_ptr)spatial_parameter_zero_grad(spatial);if(quality_ptr)quality_parameter_zero_grad(quality);accumulated=0;++r->optimizer_steps;++phase_steps;
+            if(c->restart_after_steps&&r->optimizer_steps==c->restart_after_steps){parameter_restart(parameters,c,ema_decay<1.0f,wise);if(context_ptr&&c->scope!=ED_TRAIN_QUALITY)context_parameter_restart(context,ema_decay<1.0f,wise);if(spatial_ptr&&c->scope!=ED_TRAIN_QUALITY)spatial_parameter_restart(spatial,ema_decay<1.0f,wise);if(quality_ptr)quality_parameter_restart(quality,ema_decay<1.0f,wise);phase_config=*c;phase_config.max_optimizer_steps=c->max_optimizer_steps-c->restart_after_steps;phase_steps=0;phase_start_ms=ed_monotonic_ms()-start;warmup_end_ms=0;rng=training_rng_start;}
         }
         if(c->checkpoint_prefix&&next_checkpoint<=40000u&&ed_monotonic_ms()-start>=next_checkpoint){
-            char path[1024];uint32_t i;
+            char path[1024];uint32_t i;uint64_t elapsed=ed_monotonic_ms()-start,checkpoint_ms=(elapsed/10000u)*10000u;
+            if(checkpoint_ms>40000u)checkpoint_ms=40000u;
             for(i=0;i<8u;++i){memcpy(parameters[i].before_w,parameters[i].w->data,(size_t)parameters[i].w->data_bytes);memcpy(parameters[i].before_b,parameters[i].b->data,(size_t)parameters[i].b->data_bytes);}
             if(context_ptr)for(i=0;i<ED_PICODET_LEVELS;++i){memcpy(context[i].before_w,context[i].w->data,(size_t)context[i].w->data_bytes);memcpy(context[i].before_b,context[i].b->data,(size_t)context[i].b->data_bytes);}parameter_finalize(parameters,c,ema_decay<1.0f,wise);if(context_ptr)context_parameter_finalize(context,ema_decay<1.0f,wise);
             if(spatial_ptr)for(i=0;i<ED_PICODET_LEVELS;++i){memcpy(spatial[i].before_w,spatial[i].w->data,(size_t)spatial[i].w->data_bytes);memcpy(spatial[i].before_b,spatial[i].b->data,(size_t)spatial[i].b->data_bytes);}if(spatial_ptr)spatial_parameter_finalize(spatial,ema_decay<1.0f,wise);
-            snprintf(path,sizeof(path),"%s.%llus.edm",c->checkpoint_prefix,(unsigned long long)(next_checkpoint/1000u));
+            if(quality_ptr)for(i=0;i<ED_PICODET_LEVELS;++i){memcpy(quality[i].before_w,quality[i].w->data,(size_t)quality[i].w->data_bytes);memcpy(quality[i].before_b,quality[i].b->data,(size_t)quality[i].b->data_bytes);}if(quality_ptr)quality_parameter_finalize(quality,ema_decay<1.0f,wise);
+            snprintf(path,sizeof(path),"%s.%llus.edm",c->checkpoint_prefix,(unsigned long long)(checkpoint_ms/1000u));
             status=ed_model_save_storage(m,path,c->checkpoint_storage?c->checkpoint_storage:ED_STORAGE_FP32);if(status!=ED_OK)break;
             for(i=0;i<8u;++i){memcpy(parameters[i].w->data,parameters[i].before_w,(size_t)parameters[i].w->data_bytes);memcpy(parameters[i].b->data,parameters[i].before_b,(size_t)parameters[i].b->data_bytes);}
             if(context_ptr)for(i=0;i<ED_PICODET_LEVELS;++i){memcpy(context[i].w->data,context[i].before_w,(size_t)context[i].w->data_bytes);memcpy(context[i].b->data,context[i].before_b,(size_t)context[i].b->data_bytes);}
             if(spatial_ptr)for(i=0;i<ED_PICODET_LEVELS;++i){memcpy(spatial[i].w->data,spatial[i].before_w,(size_t)spatial[i].w->data_bytes);memcpy(spatial[i].b->data,spatial[i].before_b,(size_t)spatial[i].b->data_bytes);}
-            next_checkpoint+=10000u;
+            if(quality_ptr)for(i=0;i<ED_PICODET_LEVELS;++i){memcpy(quality[i].w->data,quality[i].before_w,(size_t)quality[i].w->data_bytes);memcpy(quality[i].b->data,quality[i].before_b,(size_t)quality[i].b->data_bytes);}
+            next_checkpoint=checkpoint_ms+10000u;
         }
     }
-    if(status==ED_OK){parameter_finalize(parameters,c,ema_decay<1.0f,wise);if(context_ptr)context_parameter_finalize(context,ema_decay<1.0f,wise);if(spatial_ptr)spatial_parameter_finalize(spatial,ema_decay<1.0f,wise);}
+    if(status==ED_OK){parameter_finalize(parameters,c,ema_decay<1.0f,wise);if(context_ptr&&c->scope!=ED_TRAIN_QUALITY)context_parameter_finalize(context,ema_decay<1.0f,wise);if(spatial_ptr&&c->scope!=ED_TRAIN_QUALITY)spatial_parameter_finalize(spatial,ema_decay<1.0f,wise);if(quality_ptr)quality_parameter_finalize(quality,ema_decay<1.0f,wise);}
 done:
     r->elapsed_ms=ed_monotonic_ms()-start;r->final_loss=loss;r->deadline_respected=r->elapsed_ms<=c->budget_ms;
     r->assign_recall=stats.gt_seen?((float)stats.gt_hit/(float)stats.gt_seen):0.0f;
     r->assign_mean_iou=(stats.gt_hit?stats.iou_sum/(float)stats.gt_hit:0.0f);
     if(cache){uint32_t i;for(i=0;i<cache_count;++i)feature_cache_sample_free(&cache[i]);free(cache);}
-    spatial_parameter_free(spatial);context_parameter_free(context);parameter_free(parameters);return status;
+    quality_parameter_free(quality);spatial_parameter_free(spatial);context_parameter_free(context);parameter_free(parameters);return status;
 }

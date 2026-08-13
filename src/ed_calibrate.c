@@ -53,17 +53,36 @@ static float calibration_iou(float ax1,float ay1,float ax2,float ay2,float bx1,f
 static int score_desc(const void *a,const void *b){
     float x=((const calibration_detection*)a)->detection.score,y=((const calibration_detection*)b)->detection.score;return x<y?1:(x>y?-1:0);
 }
-static int record_has_target(const ed_dataset *d,uint32_t index,uint32_t target){
-    const uint8_t *bytes;const ed_edb_annotation_disk *a;uint32_t bytes_n,n,w,h,i;
-    if(ed_dataset_record(d,index,&bytes,&bytes_n,&a,&n,&w,&h)!=ED_OK)return 0;
-    for(i=0;i<n;++i)if(!(a[i].flags&ED_ANN_FLAG_IGNORE)&&a[i].class_id==target)return 1;
-    return 0;
-}
-static int selected_contains(const uint32_t *selected,uint32_t count,uint32_t index){uint32_t i;for(i=0;i<count;++i)if(selected[i]==index)return 1;return 0;}
 static int fold_select(uint32_t slot){return (slot%ED_CALIB_FOLD_MOD)==0u;}
 static float clampf(float v,float lo,float hi){if(v<lo)return lo;if(v>hi)return hi;return v;}
 static float vec_dot(const float *a,const float *b,uint32_t n){uint32_t i;float s=0.0f;for(i=0;i<n;++i)s+=a[i]*b[i];return s;}
 static float vec_l2(const float *a,uint32_t n){return sqrtf(vec_dot(a,a,n));}
+
+/* Build one deterministic, class-balanced calibration set. A record that
+   contains several target classes advances every corresponding quota. This
+   preserves the requested evidence per class without forwarding the same
+   multi-label scene once for each class. */
+static ed_status select_calibration_records(const ed_dataset *d,uint32_t samples_per_class,uint64_t seed,
+                                            uint32_t *selected,uint32_t selected_capacity,uint32_t *selected_count){
+    uint32_t taken[ED_MAX_CLASSES]={0},remaining=d->header.class_count,scanned=0,count=0;
+    uint32_t start=(uint32_t)(seed%d->header.record_count);
+    while(scanned<d->header.record_count&&remaining){
+        uint32_t index=(start+scanned)%d->header.record_count,encoded_n,ann_n,w,h,i,target;
+        const uint8_t *encoded;const ed_edb_annotation_disk *anns;uint8_t present[ED_MAX_CLASSES]={0};int useful=0;
+        ed_status status=ed_dataset_record(d,index,&encoded,&encoded_n,&anns,&ann_n,&w,&h);(void)encoded;(void)encoded_n;(void)w;(void)h;
+        ++scanned;if(status!=ED_OK)return status;
+        for(i=0;i<ann_n;++i)if(!(anns[i].flags&ED_ANN_FLAG_IGNORE)&&anns[i].class_id<d->header.class_count)present[anns[i].class_id]=1u;
+        for(target=0;target<d->header.class_count;++target)if(present[target]&&taken[target]<samples_per_class){useful=1;break;}
+        if(!useful)continue;
+        if(count>=selected_capacity)return ED_ERR_FORMAT;
+        selected[count++]=index;
+        for(target=0;target<d->header.class_count;++target)if(present[target]&&taken[target]<samples_per_class){
+            ++taken[target];if(taken[target]==samples_per_class)--remaining;
+        }
+    }
+    for(scanned=0;scanned<d->header.class_count;++scanned)if(taken[scanned]==0u)return ED_ERR_FORMAT;
+    *selected_count=count;return ED_OK;
+}
 
 static int append_prediction(calibration_detection **items,size_t *count,size_t *capacity,const ed_detection *d,uint32_t image_slot,uint32_t source){
     if(*count==*capacity){size_t next=*capacity?*capacity*2u:4096u;void *p=realloc(*items,next*sizeof(**items));if(!p)return 0;*items=(calibration_detection*)p;*capacity=next;}
@@ -449,27 +468,34 @@ static void build_heads(ed_class_init_mode mode,ed_proto_solver solver,int fit_o
 
 ed_status ed_model_calibrate_classes_ex(ed_model *m,const ed_dataset *d,uint32_t samples_per_class,uint64_t seed,
                                         ed_class_init_mode init_mode,ed_proto_solver proto_solver,ed_class_calibration_report *report){
-    uint32_t *selected=NULL,selected_count=0,selected_capacity,target,taken,scanned,start,s,old_count=0,store_count=0,store_cap;
+    uint32_t *selected=NULL,selected_count=0,selected_capacity,target,s,old_count=0,store_count=0,store_cap;
     calibration_detection *predictions=NULL;size_t prediction_count=0,prediction_capacity=0;const char *names[ED_MAX_CLASSES];
     feature_bank *pos=NULL,*neg=NULL;stored_loc *store=NULL;float *src_w[ED_PICODET_LEVELS]={0},*src_b[ED_PICODET_LEVELS]={0};
     float *weights=NULL,*biases=NULL;ed_status status=ED_OK;uint32_t level;
     if(!m||!d||!report||samples_per_class==0u||d->header.class_count==0u||d->header.class_count>ED_MAX_CLASSES||m->class_count==0u||m->class_count>ED_MAX_CLASSES)return ED_ERR_ARGUMENT;
     if((unsigned)init_mode>ED_INIT_PROTOTYPE_RESIDUAL||(unsigned)proto_solver>ED_PROTO_LDA)return ED_ERR_ARGUMENT;
-    selected_capacity=d->header.class_count*samples_per_class;selected=(uint32_t*)malloc((size_t)selected_capacity*sizeof(*selected));if(!selected)return ED_ERR_MEMORY;
+    {uint64_t requested=(uint64_t)d->header.class_count*samples_per_class;selected_capacity=requested<d->header.record_count?(uint32_t)requested:d->header.record_count;}
+    selected=(uint32_t*)malloc((size_t)selected_capacity*sizeof(*selected));if(!selected)return ED_ERR_MEMORY;
     memset(report,0,sizeof(*report));report->class_count=d->header.class_count;report->init_mode_used=(uint32_t)init_mode;report->proto_solver_used=(uint32_t)proto_solver;
     pos=(feature_bank*)calloc(d->header.class_count,sizeof(*pos));neg=(feature_bank*)calloc(d->header.class_count,sizeof(*neg));
     if(!pos||!neg){status=ED_ERR_MEMORY;goto done;}
     for(target=0;target<d->header.class_count;++target)if(!bank_init(&pos[target],ED_CALIB_POS_CAP)||!bank_init(&neg[target],ED_CALIB_NEG_CAP)){status=ED_ERR_MEMORY;goto done;}
-    for(target=0;target<d->header.class_count;++target){start=(uint32_t)((seed+target*2654435761u)%d->header.record_count);taken=0;scanned=0;
-        while(taken<samples_per_class&&scanned<d->header.record_count){uint32_t index=(start+scanned)%d->header.record_count;++scanned;if(!record_has_target(d,index,target))continue;++taken;if(!selected_contains(selected,selected_count,index))selected[selected_count++]=index;}
-        if(taken==0u){status=ED_ERR_FORMAT;goto done;}
-    }
+    status=select_calibration_records(d,samples_per_class,seed,selected,selected_capacity,&selected_count);if(status!=ED_OK)goto done;
+    report->calibration_records=selected_count;
     store_cap=selected_count*ED_CALIB_STORE_PER_IMAGE;store=(stored_loc*)malloc((size_t)store_cap*sizeof(*store));if(!store){status=ED_ERR_MEMORY;goto done;}
     for(s=0;s<selected_count;++s){status=collect_record(m,d,selected[s],s,&predictions,&prediction_count,&prediction_capacity,pos,neg,store,&store_count);if(status!=ED_OK)goto done;}
     for(target=0;target<d->header.class_count;++target){uint32_t k,limit=m->class_count<ED_CALIBRATION_NOVEL_BLEND?m->class_count:ED_CALIBRATION_NOVEL_BLEND;
         for(k=0;k<ED_CALIBRATION_NOVEL_BLEND;++k){report->source_class[target][k]=UINT32_MAX;report->source_affinity[target][k]=-1.0f;}
         for(s=0;s<m->class_count;++s){float ap=calibration_ap(d,selected,selected_count,predictions,prediction_count,target,s,s==0u?&report->calibrated_objects[target]:NULL);for(k=0;k<limit;++k)if(ap>report->source_affinity[target][k]){uint32_t move;for(move=limit-1u;move>k;--move){report->source_affinity[target][move]=report->source_affinity[target][move-1u];report->source_class[target][move]=report->source_class[target][move-1u];}report->source_affinity[target][k]=ap;report->source_class[target][k]=s;break;}}
         report->source_count[target]=report->source_affinity[target][0]>=ED_CALIBRATION_STRONG_AFFINITY?1u:limit;report->blended_affinity[target]=report->source_affinity[target][0];
+        {int named=ed_find_source_class(m,d->class_names[target]);
+            if(named>=0){uint32_t named_slot;float named_ap=-1.0f;
+                for(named_slot=0;named_slot<limit;++named_slot)if(report->source_class[target][named_slot]==(uint32_t)named)named_ap=report->source_affinity[target][named_slot];
+                if(named_ap<0.0f)named_ap=calibration_ap(d,selected,selected_count,predictions,prediction_count,target,(uint32_t)named,NULL);
+                if(named_ap<ED_CALIBRATION_STRONG_AFFINITY)named_ap=ED_CALIBRATION_STRONG_AFFINITY;
+                report->source_class[target][0]=(uint32_t)named;report->source_affinity[target][0]=named_ap;
+                for(named_slot=1;named_slot<ED_CALIBRATION_NOVEL_BLEND;++named_slot){report->source_class[target][named_slot]=UINT32_MAX;report->source_affinity[target][named_slot]=-1.0f;}
+                report->source_count[target]=1u;report->blended_affinity[target]=named_ap;}}
         names[target]=d->class_names[target];
     }
     if(!snapshot_cls(m,src_w,src_b,&old_count)){status=ED_ERR_FORMAT;goto done;}(void)old_count;

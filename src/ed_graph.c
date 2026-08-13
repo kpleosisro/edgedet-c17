@@ -34,6 +34,15 @@ ed_status ed_graph_apply_context(const ed_model*m,ed_activation*a){
         free(dist);
     }return ED_OK;
 }
+ed_status ed_graph_apply_quality(const ed_model*m,ed_activation*a){
+    static const char *wn[ED_PICODET_LEVELS]={"ed.quality.0.w","ed.quality.1.w","ed.quality.2.w","ed.quality.3.w"};
+    static const char *bn[ED_PICODET_LEVELS]={"ed.quality.0.b","ed.quality.1.b","ed.quality.2.b","ed.quality.3.b"};
+    uint32_t l;if(!m||!a)return ED_ERR_ARGUMENT;
+    for(l=0;l<ED_PICODET_LEVELS;++l){const ed_tensor*w=ed_find_tensor_const(m,wn[l]),*b=ed_find_tensor_const(m,bn[l]);ed_activation*f=&a[ed_picodet_feature_nodes[l]],*raw=&a[ed_picodet_raw_cls_nodes[l]],*score=&a[ed_picodet_cls_nodes[l]];int32_t qn;uint32_t y,x,c,k;
+        if(!w&&!b)continue;if(!w||!b||w->rank!=2u||w->dims[0]!=m->class_count||w->dims[1]!=96u||w->data_bytes!=(uint64_t)m->class_count*96u*sizeof(float)||b->rank!=1u||b->dims[0]!=m->class_count||b->data_bytes!=(uint64_t)m->class_count*sizeof(float)||f->c!=96u||raw->c!=m->class_count)return ED_ERR_FORMAT;qn=quality_node(l);if(qn<0)return ED_ERR_FORMAT;
+        for(y=0;y<raw->h;++y)for(x=0;x<raw->w;++x){const float*fp=f->data+((size_t)y*f->w+x)*96u;float base_q=a[qn].data[(size_t)y*raw->w+x];base_q=base_q<1e-6f?1e-6f:(base_q>1.0f-1e-6f?1.0f-1e-6f:base_q);for(c=0;c<m->class_count;++c){size_t i=((size_t)y*raw->w+x)*m->class_count+c;float z=logf(base_q/(1.0f-base_q))+((const float*)b->data)[c],p,q;for(k=0;k<96u;++k)z+=((const float*)w->data)[(size_t)c*96u+k]*fp[k];q=1.0f/(1.0f+expf(-z));p=1.0f/(1.0f+expf(-raw->data[i]));score->data[i]=sqrtf(p*q);}}
+    }return ED_OK;
+}
 
 ed_status ed_graph_execute(const ed_model*m,const float*image,ed_activation**out){
     ed_activation*a;uint32_t i;if(!m||!image||!out)return ED_ERR_ARGUMENT;*out=NULL;
@@ -63,6 +72,6 @@ ed_status ed_graph_execute(const ed_model*m,const float*image,ed_activation**out
         else if(n->op==ED_OP_CLIP){const float*lo=ref_data(m,image,a,n->input[1]);const float*hi=ref_data(m,image,a,n->input[2]);size_t z,N=elems(h,w,c);for(z=0;z<N;++z){float v=p0[z];if(v<*lo)v=*lo;if(v>*hi)v=*hi;a[i].data[z]=v;}}
         else {ed_runtime_power_mark_end();ed_graph_activations_free(a);return ED_ERR_UNSUPPORTED;}
     }
-    if(ed_graph_apply_spatial(m,a)!=ED_OK||ed_graph_apply_context(m,a)!=ED_OK){ed_runtime_power_mark_end();ed_graph_activations_free(a);return ED_ERR_FORMAT;}*out=a;ed_runtime_power_mark_end();return ED_OK;
+    if(ed_graph_apply_spatial(m,a)!=ED_OK||ed_graph_apply_context(m,a)!=ED_OK||ed_graph_apply_quality(m,a)!=ED_OK){ed_runtime_power_mark_end();ed_graph_activations_free(a);return ED_ERR_FORMAT;}*out=a;ed_runtime_power_mark_end();return ED_OK;
 }
 void ed_graph_activations_free(ed_activation*a){uint32_t i;if(!a)return;for(i=0;i<ed_picodet_node_count;++i)free(a[i].data);free(a);}
