@@ -58,29 +58,34 @@ static float clampf(float v,float lo,float hi){if(v<lo)return lo;if(v>hi)return 
 static float vec_dot(const float *a,const float *b,uint32_t n){uint32_t i;float s=0.0f;for(i=0;i<n;++i)s+=a[i]*b[i];return s;}
 static float vec_l2(const float *a,uint32_t n){return sqrtf(vec_dot(a,a,n));}
 
-/* Build one deterministic, class-balanced calibration set. A record that
-   contains several target classes advances every corresponding quota. This
-   preserves the requested evidence per class without forwarding the same
-   multi-label scene once for each class. */
+static int record_has_target(const ed_dataset *d,uint32_t index,uint32_t target){
+    const uint8_t *bytes;const ed_edb_annotation_disk *a;uint32_t bytes_n,n,w,h,i;
+    if(ed_dataset_record(d,index,&bytes,&bytes_n,&a,&n,&w,&h)!=ED_OK)return 0;
+    for(i=0;i<n;++i)if(!(a[i].flags&ED_ANN_FLAG_IGNORE)&&a[i].class_id==target)return 1;
+    return 0;
+}
+static int selected_contains(const uint32_t *selected,uint32_t count,uint32_t index){uint32_t i;for(i=0;i<count;++i)if(selected[i]==index)return 1;return 0;}
+
+/* Start each class scan at a different deterministic offset. The former
+   single shared scan was faster, but it concentrated calibration on one
+   contiguous portion of class-grouped datasets and reduced held-out AP on
+   low-thread machines. Records shared by classes are still forwarded once. */
 static ed_status select_calibration_records(const ed_dataset *d,uint32_t samples_per_class,uint64_t seed,
                                             uint32_t *selected,uint32_t selected_capacity,uint32_t *selected_count){
-    uint32_t taken[ED_MAX_CLASSES]={0},remaining=d->header.class_count,scanned=0,count=0;
-    uint32_t start=(uint32_t)(seed%d->header.record_count);
-    while(scanned<d->header.record_count&&remaining){
-        uint32_t index=(start+scanned)%d->header.record_count,encoded_n,ann_n,w,h,i,target;
-        const uint8_t *encoded;const ed_edb_annotation_disk *anns;uint8_t present[ED_MAX_CLASSES]={0};int useful=0;
-        ed_status status=ed_dataset_record(d,index,&encoded,&encoded_n,&anns,&ann_n,&w,&h);(void)encoded;(void)encoded_n;(void)w;(void)h;
-        ++scanned;if(status!=ED_OK)return status;
-        for(i=0;i<ann_n;++i)if(!(anns[i].flags&ED_ANN_FLAG_IGNORE)&&anns[i].class_id<d->header.class_count)present[anns[i].class_id]=1u;
-        for(target=0;target<d->header.class_count;++target)if(present[target]&&taken[target]<samples_per_class){useful=1;break;}
-        if(!useful)continue;
-        if(count>=selected_capacity)return ED_ERR_FORMAT;
-        selected[count++]=index;
-        for(target=0;target<d->header.class_count;++target)if(present[target]&&taken[target]<samples_per_class){
-            ++taken[target];if(taken[target]==samples_per_class)--remaining;
+    uint32_t target,count=0;
+    for(target=0;target<d->header.class_count;++target){
+        uint32_t start=(uint32_t)((seed+(uint32_t)(target*2654435761u))%d->header.record_count),taken=0,scanned=0;
+        while(taken<samples_per_class&&scanned<d->header.record_count){
+            uint32_t index=(start+scanned)%d->header.record_count;++scanned;
+            if(!record_has_target(d,index,target))continue;
+            ++taken;
+            if(!selected_contains(selected,count,index)){
+                if(count>=selected_capacity)return ED_ERR_FORMAT;
+                selected[count++]=index;
+            }
         }
+        if(taken==0u)return ED_ERR_FORMAT;
     }
-    for(scanned=0;scanned<d->header.class_count;++scanned)if(taken[scanned]==0u)return ED_ERR_FORMAT;
     *selected_count=count;return ED_OK;
 }
 

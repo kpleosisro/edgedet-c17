@@ -54,10 +54,12 @@ hard negatives.
   probability while ranking a different value.
 - TaskAligned targets are normalized per ground-truth object; regression is
   weighted by the assigned score, with GIoU weight 2.5 and DFL weight 0.5.
-- The bounded feature cache now covers distinct records deterministically
-  instead of sampling the same small pool with replacement.
-- Selection saves and reloads the requested FP16 artifact, then requires mAP50
-  and every class AP50 to be non-decreasing before promotion.
+- The bounded feature cache uses seeded random, class-balanced sampling. A
+  fixed record walk was tested and rejected because it reduced held-out
+  multi-class AP on the one-thread path.
+- Selection saves and reloads the requested artifact, then compares source,
+  calibrated, and adapted states at a configurable score threshold. A state
+  that regresses any class below the source state cannot be promoted.
 - Predictions are clipped to the visible image after NMS, and evaluation now
   matches each prediction to the best still-unmatched ground truth.
 

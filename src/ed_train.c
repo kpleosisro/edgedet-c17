@@ -272,12 +272,11 @@ static int record_has_class(const ed_dataset *d,uint32_t index,uint32_t class_id
 }
 static ed_status make_mosaic(const ed_dataset *d,uint64_t *rng,uint32_t sample_slot,ed_image *image,ed_edb_annotation_disk **out_a,uint32_t *out_n){
     uint8_t *canvas=(uint8_t*)calloc(320u*320u*3u,1);ed_edb_annotation_disk *all=NULL;uint32_t count=0,capacity=0,slot;
-    (void)rng;
     if(!canvas)return ED_ERR_MEMORY;
     for(slot=0;slot<4u;++slot){
-        uint32_t target=(sample_slot*4u+slot)%d->header.class_count,index=(sample_slot*4u+slot)%d->header.record_count,attempt;
+        uint32_t target=(sample_slot*4u+slot)%d->header.class_count,index=(uint32_t)(rng_next(rng)%d->header.record_count),attempt;
         const uint8_t *encoded;const ed_edb_annotation_disk *a;uint32_t encoded_n,n,w,h,j;uint8_t *rgb=NULL;ed_status s;
-        for(attempt=0;attempt<d->header.record_count&&!record_has_class(d,index,target);++attempt)index=(index+1u)%d->header.record_count;
+        for(attempt=0;attempt<64u&&!record_has_class(d,index,target);++attempt)index=(uint32_t)(rng_next(rng)%d->header.record_count);
         s=ed_dataset_record(d,index,&encoded,&encoded_n,&a,&n,&w,&h);if(s!=ED_OK){free(canvas);free(all);return s;}
         s=ed_decode_image(encoded,encoded_n,&rgb,&w,&h);if(s!=ED_OK){free(canvas);free(all);return s;}
         {uint32_t y,x,ox=(slot&1u)*160u,oy=(slot>>1u)*160u;
@@ -289,10 +288,8 @@ static ed_status make_mosaic(const ed_dataset *d,uint64_t *rng,uint32_t sample_s
     image->rgb=canvas;image->width=320u;image->height=320u;image->stride_bytes=960u;*out_a=all;*out_n=count;return ED_OK;
 }
 static ed_status make_single(const ed_dataset *d,uint64_t *rng,uint32_t sample_slot,ed_image *image,ed_edb_annotation_disk **out_a,uint32_t *out_n){
-    uint32_t target=sample_slot%d->header.class_count,index=(sample_slot*131u+17u)%d->header.record_count,initial=index,attempt,encoded_n,n,w,h;const uint8_t *encoded;const ed_edb_annotation_disk *a;uint8_t *rgb=NULL;ed_edb_annotation_disk *copy;ed_status s;
-    (void)rng;
-    if(d->header.class_count==1u){int want_positive=(sample_slot&1u)==0u;for(attempt=0;attempt<d->header.record_count&&(record_has_class(d,index,0u)!=want_positive);++attempt)index=(index+1u)%d->header.record_count;if(attempt==d->header.record_count)index=initial;}
-    else for(attempt=0;attempt<d->header.record_count&&!record_has_class(d,index,target);++attempt)index=(index+1u)%d->header.record_count;
+    uint32_t target=sample_slot%d->header.class_count,index=(uint32_t)(rng_next(rng)%d->header.record_count),attempt,encoded_n,n,w,h;const uint8_t *encoded;const ed_edb_annotation_disk *a;uint8_t *rgb=NULL;ed_edb_annotation_disk *copy;ed_status s;
+    for(attempt=0;attempt<64u&&!record_has_class(d,index,target);++attempt)index=(uint32_t)(rng_next(rng)%d->header.record_count);
     s=ed_dataset_record(d,index,&encoded,&encoded_n,&a,&n,&w,&h);if(s!=ED_OK)return s;
     s=ed_decode_image(encoded,encoded_n,&rgb,&w,&h);if(s!=ED_OK)return s;
     copy=(ed_edb_annotation_disk*)malloc((n?n:1u)*sizeof(*copy));if(!copy){free(rgb);return ED_ERR_MEMORY;}

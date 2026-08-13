@@ -142,12 +142,21 @@ such as `car`, `Car`, `taxi`, `van`, and `ambulance`; use
 
 For an accuracy floor, pass a disjoint development set with
 `--selection-dataset validation.edb`. After timed adaptation, `edtrain`
-first writes and reloads the requested storage format, then compares that
-deployed candidate with the incoming model at AP50 (score 0.001, NMS 0.42).
-It retains the candidate only when neither mAP50 nor any individual class AP50
-drops. The evaluations are deliberately outside `--budget-ms`; on a low-spec
-CPU this guard can take longer than adaptation, but it prevents a faster recipe
-or a marginal pre-quantization result from replacing a better detector.
+compares three deployed states: the source model remapped by class name, the
+calibrated pre-training model, and the serialized adapted model. The default
+selection score is 0.01 (NMS 0.42); set it explicitly with
+`--selection-score-threshold`. A calibrated or adapted state is eligible only
+when no class AP50 drops below the source state, and the eligible state with
+the highest mAP50 is retained. The evaluations are deliberately outside
+`--budget-ms`; on a low-spec CPU this guard can take longer than adaptation.
+Use a representative, disjoint selection set: a tiny slice can still select a
+candidate whose small gain does not generalize.
+
+The one-thread low-spec regression audit and exact commands are in
+[`LOW_SPEC_RESULTS.md`](LOW_SPEC_RESULTS.md). On the current machine, the
+one-thread VOC2007 `car`/`cat`/`dog` run improved current-evaluator validation
+mAP50 from 84.61% to 85.16% in a 3.37-second timed pipeline. The Kaggle car and
+novel-animal sets remain below 80%; no cross-dataset 80% claim is made.
 
 For the deduplicated RGB Kaggle car split, the corrected low-resource recipe
 improved validation AP50 from 67.56% to 70.14% and test AP50 from 69.58% to
