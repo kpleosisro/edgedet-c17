@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+static float ed_clampf(float value,float minimum,float maximum){
+    return value<minimum?minimum:(value>maximum?maximum:value);
+}
+
 static int range_ok(uint64_t off,uint64_t bytes,size_t total){return off<=total&&bytes<=total-off;}
 static int tensor_elements(const ed_edm_tensor_disk*d,size_t*out){size_t n=1;uint32_t i;if(!d||!out||d->rank==0u||d->rank>ED_MAX_TENSOR_RANK)return 0;for(i=0;i<ED_MAX_TENSOR_RANK;++i){if(d->dims[i]==0u||n>SIZE_MAX/d->dims[i])return 0;n*=d->dims[i];}*out=n;return 1;}
 #define ED_INT4_MIN_ELEMENTS 131072u
@@ -103,6 +107,32 @@ void ed_model_free(ed_model*m){uint32_t i;if(!m)return;for(i=0;i<m->tensor_count
 uint32_t ed_model_class_count(const ed_model*m){return m?m->class_count:0;}
 const char*ed_model_class_name(const ed_model*m,uint32_t id){return m&&id<m->class_count?m->class_names[id]:NULL;}
 
+static int ed_ascii_lower(int c){return (c>='A'&&c<='Z')?c-'A'+'a':c;}
+static int ed_name_eq_ci(const char *a,const char *b){
+    if(!a||!b)return 0;
+    while(*a&&*b){if(ed_ascii_lower((unsigned char)*a)!=ed_ascii_lower((unsigned char)*b))return 0;++a;++b;}
+    return *a==0&&*b==0;
+}
+static const char *ed_class_alias(const char *name){
+    static const char *pairs[][2]={
+        {"ambulance","truck"},{"van","truck"},{"pickup","truck"},{"lorry","truck"},{"semi","truck"},
+        {"motorbike","motorcycle"},{"moto","motorcycle"},{"bike","motorcycle"},
+        {"taxi","car"},{"sedan","car"},{"suv","car"},{"coupe","car"},{"vehicle","car"},{"auto","car"},
+        {"minibus","bus"},{"coach","bus"},
+        {NULL,NULL}
+    };
+    uint32_t i;for(i=0;pairs[i][0];++i)if(ed_name_eq_ci(name,pairs[i][0]))return pairs[i][1];
+    return NULL;
+}
+int ed_find_source_class(const ed_model *m,const char *name){
+    uint32_t i;const char *alias;
+    if(!m||!name)return -1;
+    for(i=0;i<m->class_count;++i)if(ed_name_eq_ci(name,m->class_names[i]))return (int)i;
+    alias=ed_class_alias(name);
+    if(alias)for(i=0;i<m->class_count;++i)if(ed_name_eq_ci(alias,m->class_names[i]))return (int)i;
+    return -1;
+}
+
 ed_status ed_model_remap_classes(ed_model*m,const char*const*names,uint32_t count){
     char(*new_names)[ED_CLASS_NAME_BYTES];uint32_t level,c,old_count;if(!m||!names||count==0u||count>ED_MAX_CLASSES)return ED_ERR_ARGUMENT;
     for(c=0;c<count;++c)if(!names[c]||!*names[c]||strlen(names[c])>=ED_CLASS_NAME_BYTES)return ED_ERR_ARGUMENT;
@@ -110,7 +140,7 @@ ed_status ed_model_remap_classes(ed_model*m,const char*const*names,uint32_t coun
     for(level=0;level<ED_PICODET_LEVELS;++level){const ed_graph_node*n=&ed_picodet_nodes[ed_picodet_raw_cls_nodes[level]];ed_tensor*wt,*bt;float*nw,*nb,*ow,*ob;uint32_t target,source,ic;
         if(n->op!=ED_OP_CONV||n->input_count<3||n->input[1]>-2||n->input[2]>-2){free(new_names);return ED_ERR_FORMAT;}wt=&m->tensors[-n->input[1]-2];bt=&m->tensors[-n->input[2]-2];
         if(wt->dims[0]!=old_count||wt->dims[3]!=96u||bt->dims[0]!=old_count){free(new_names);return ED_ERR_FORMAT;}nw=(float*)malloc((size_t)count*96u*sizeof(float));nb=(float*)malloc((size_t)count*sizeof(float));if(!nw||!nb){free(nw);free(nb);free(new_names);return ED_ERR_MEMORY;}ow=(float*)wt->data;ob=(float*)bt->data;
-        for(target=0;target<count;++target){int match=-1;for(source=0;source<old_count;++source)if(strcmp(names[target],m->class_names[source])==0){match=(int)source;break;}if(match>=0){memcpy(nw+(size_t)target*96u,ow+(size_t)(uint32_t)match*96u,96u*sizeof(float));nb[target]=ob[match];}else{for(ic=0;ic<96u;++ic){float sum=0.0f;for(source=0;source<old_count;++source)sum+=ow[(size_t)source*96u+ic];nw[(size_t)target*96u+ic]=sum/(float)old_count;}nb[target]=-4.59511985f;}}
+        for(target=0;target<count;++target){int match=ed_find_source_class(m,names[target]);if(match>=0){memcpy(nw+(size_t)target*96u,ow+(size_t)(uint32_t)match*96u,96u*sizeof(float));nb[target]=ob[match];}else{for(ic=0;ic<96u;++ic){float sum=0.0f;for(source=0;source<old_count;++source)sum+=ow[(size_t)source*96u+ic];nw[(size_t)target*96u+ic]=sum/(float)old_count;}nb[target]=-4.59511985f;}}
         free(wt->data);free(bt->data);wt->data=nw;wt->dims[0]=count;wt->data_bytes=(uint64_t)count*96u*sizeof(float);bt->data=nb;bt->dims[0]=count;bt->data_bytes=(uint64_t)count*sizeof(float);
     }
     free(m->class_names);m->class_names=new_names;m->class_count=count;return ED_OK;
@@ -179,7 +209,17 @@ ed_status ed_predict(const ed_model*m,const ed_image*im,float st,float nt,ed_det
         for(y=0;y<rg->h;++y)for(x=0;x<rg->w;++x)for(c=0;c<m->class_count;++c){float score=sc->data[((size_t)y*rg->w+x)*m->class_count+c];if(score>=st&&cand_n<cand_cap){const float*d=dist+((size_t)y*rg->w+x)*4u;float stride=(float)ed_picodet_strides[l],cx=((float)x+0.5f)*stride,cy=((float)y+0.5f)*stride;ed_detection*z=&candidates[cand_n++];z->x1=(cx-d[0]*stride)*(float)im->width/320.0f;z->y1=(cy-d[1]*stride)*(float)im->height/320.0f;z->x2=(cx+d[2]*stride)*(float)im->width/320.0f;z->y2=(cy+d[3]*stride)*(float)im->height/320.0f;z->score=score;z->class_id=c;}}
         free(dist);
     }
-    cand_n=ed_nms(candidates,cand_n,nt);out->count=cand_n<out->capacity?cand_n:out->capacity;memcpy(out->items,candidates,out->count*sizeof(*out->items));s=ED_OK;
+    cand_n=ed_nms(candidates,cand_n,nt);
+    /* Ground-truth boxes and the visible image domain are both bounded by the
+       image.  Clipping after NMS leaves suppression and ranking unchanged, and
+       can only remove out-of-frame area before IoU is measured. */
+    {size_t i;for(i=0;i<cand_n;++i){
+        candidates[i].x1=ed_clampf(candidates[i].x1,0.0f,(float)im->width);
+        candidates[i].y1=ed_clampf(candidates[i].y1,0.0f,(float)im->height);
+        candidates[i].x2=ed_clampf(candidates[i].x2,0.0f,(float)im->width);
+        candidates[i].y2=ed_clampf(candidates[i].y2,0.0f,(float)im->height);
+    }}
+    out->count=cand_n<out->capacity?cand_n:out->capacity;memcpy(out->items,candidates,out->count*sizeof(*out->items));s=ED_OK;
 done:ed_graph_activations_free(a);free(input);free(candidates);return s;
 }
 ed_status ed_predict_auto(const ed_model*m,const ed_image*im,float st,float nt,ed_detection_list*out){

@@ -47,7 +47,8 @@ typedef enum {
 typedef enum {
     ED_TRAIN_OUTPUTS = 1,
     ED_TRAIN_HEAD = 2,
-    ED_TRAIN_CLASSIFICATION = 3
+    ED_TRAIN_CLASSIFICATION = 3,
+    ED_TRAIN_QUALITY = 4
 } ed_train_scope;
 
 typedef enum {
@@ -131,6 +132,8 @@ typedef struct {
     uint32_t nesterov;
     uint32_t roi_head;
     uint32_t picofeat_adapter;
+    uint32_t aligned_loss;
+    uint32_t quality_adapter;
 } ed_train_config;
 
 typedef struct {
@@ -145,6 +148,8 @@ typedef struct {
     float median_box_side;
     float assign_recall;
     float assign_mean_iou;
+    uint32_t feature_cache_samples;
+    uint64_t feature_cache_ms;
 } ed_train_report;
 
 typedef struct {
@@ -169,6 +174,7 @@ typedef struct {
     float fold_map50;
     float fold_ap[ED_MAX_CLASSES];
     float classifier_norm[ED_MAX_CLASSES];
+    uint32_t calibration_records;
 } ed_class_calibration_report;
 
 const char *ed_status_string(ed_status status);
@@ -256,6 +262,12 @@ ed_status ed_evaluate_map50_ex(const ed_model *model, const ed_dataset *dataset,
                                uint32_t tiles_x, uint32_t tiles_y,
                                float tile_overlap, int include_full_image,
                                float soft_nms_sigma, ed_map_report *report);
+ed_status ed_evaluate_map50_tta(const ed_model *model, const ed_dataset *dataset,
+                                float score_threshold, float nms_threshold,
+                                uint32_t tiles_x, uint32_t tiles_y,
+                                float tile_overlap, int include_full_image,
+                                float soft_nms_sigma, int hflip,
+                                ed_map_report *report);
 
 /* Low-level deterministic kernels are public for embedded integration/tests. */
 void ed_conv2d_f32(const float *input, uint32_t in_h, uint32_t in_w,

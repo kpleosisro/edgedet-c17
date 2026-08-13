@@ -143,6 +143,7 @@ ed_status ed_mapped_file_open(const char *path, ed_mapped_file *file);
 void ed_mapped_file_close(ed_mapped_file *file);
 ed_tensor *ed_find_tensor(ed_model *model, const char *name);
 const ed_tensor *ed_find_tensor_const(const ed_model *model, const char *name);
+int ed_find_source_class(const ed_model *model, const char *name);
 int ed_cpu_has_avx2_fma(void);
 int ed_cpu_has_neon(void);
 typedef void (*ed_parallel_fn)(void *context,size_t begin,size_t end);

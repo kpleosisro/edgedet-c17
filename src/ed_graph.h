@@ -32,5 +32,6 @@ extern const uint32_t ed_picodet_strides[ED_PICODET_LEVELS];
 ed_status ed_graph_execute(const ed_model *model,const float *image,ed_activation **out);
 ed_status ed_graph_apply_context(const ed_model *model,ed_activation *activations);
 ed_status ed_graph_apply_spatial(const ed_model *model,ed_activation *activations);
+ed_status ed_graph_apply_quality(const ed_model *model,ed_activation *activations);
 void ed_graph_activations_free(ed_activation *a);
 #endif

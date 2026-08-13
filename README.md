@@ -124,11 +124,58 @@ command reserves the larger of one second or two percent of the requested
 budget for final serialization. Dataset packing and later evaluation are not
 inside this timer.
 
-`edtrain` reads the target class table from the `.edb`, but it does not use
-target names to choose pretrained channels when a larger source model is
-available. It measures every source classifier against a balanced subset of
-target boxes inside the timer. Strong targets retain the best source channel;
-weak targets blend four high-affinity channels. Low-affinity classes default
+On slower machines, automatic class calibration first measures a one-sample
+probe and sizes the balanced calibration set to roughly one quarter of the
+outer deadline. A record containing several target classes satisfies every
+corresponding quota in one backbone forward. Explicit
+`--calibration-samples N` retains the fixed-size research workflow and skips
+the probe. Feature-cache construction also reserves the final 20% of its
+training budget for optimizer steps and reports `cache_samples` and
+`cache_ms`, so a slow backbone cannot consume the deadline without updating
+the output head.
+
+If every dataset class has a case-insensitive COCO name or a built-in vehicle
+alias, `edtrain` skips empirical calibration entirely and copies the matching
+pretrained channel. This is the default low-resource path for common targets
+such as `car`, `Car`, `taxi`, `van`, and `ambulance`; use
+`--no-class-calibration` only when an explicit average-head remap is desired.
+
+For an accuracy floor, pass a disjoint development set with
+`--selection-dataset validation.edb`. After timed adaptation, `edtrain`
+compares three deployed states: the source model remapped by class name, the
+calibrated pre-training model, and the serialized adapted model. The default
+selection score is 0.01 (NMS 0.42); set it explicitly with
+`--selection-score-threshold`. A calibrated or adapted state is eligible only
+when no class AP50 drops below the source state, and the eligible state with
+the highest mAP50 is retained. The evaluations are deliberately outside
+`--budget-ms`; on a low-spec CPU this guard can take longer than adaptation.
+Use a representative, disjoint selection set: a tiny slice can still select a
+candidate whose small gain does not generalize.
+
+The one-thread low-spec regression audit and exact commands are in
+[`LOW_SPEC_RESULTS.md`](LOW_SPEC_RESULTS.md). On the current machine, the
+one-thread VOC2007 `car`/`cat`/`dog` run improved current-evaluator validation
+mAP50 from 84.61% to 85.16% in a 3.37-second timed pipeline. The Kaggle car and
+novel-animal sets remain below 80%; no cross-dataset 80% claim is made.
+
+For the deduplicated RGB Kaggle car split, the corrected low-resource recipe
+improved validation AP50 from 67.56% to 70.14% and test AP50 from 69.58% to
+70.73%. It did not reach the requested 85%, so no 85% claim is made. Dataset
+construction, accepted/rejected experiments, hashes, and exact evaluation
+commands are recorded in [`KAGGLE_CAR_RGB_RESULTS.md`](KAGGLE_CAR_RGB_RESULTS.md).
+
+`--aligned-loss` opts into the PicoHeadV2-aligned training path: normalized
+TaskAligned targets, a classification gradient through the deployed aligned
+score, target-weighted regression, and 2.5 GIoU / 0.5 DFL loss weights. The
+legacy objective remains available for compatibility. The experimental
+`--quality-adapter --train-scope quality` path adds a zero-initialized residual
+to the frozen quality/ranking probability while leaving classifier, DFL, and
+backbone weights fixed; selection gating is still required before promotion.
+
+For target classes that cannot be mapped by name or vehicle alias, `edtrain`
+measures every source classifier against a balanced subset of target boxes
+inside the timer. Strong targets retain the best source channel; weak targets
+blend four high-affinity channels. Low-affinity classes default
 to classification-only adaptation with a knowledge-preserving optimizer
 restart, per-class classification-loss normalization, hard-negative boosting
 on confused positives, and a larger learning rate than high-affinity classes.
