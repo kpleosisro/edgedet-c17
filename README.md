@@ -29,6 +29,20 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
+## GitHub Codespaces
+
+The default Codespaces image is enough. After the repo is open in a
+codespace, run:
+
+```sh
+bash scripts/codespace-bootstrap.sh
+```
+
+That installs CMake/Ninja, the Kaggle CLI, builds `build/edtrain` and
+friends, and checks Kaggle login. Put `kaggle.json` in `~/.kaggle/`
+(mode `600`), or set Codespace secrets `KAGGLE_USERNAME` and
+`KAGGLE_KEY`. New codespaces also run `.devcontainer/post-create.sh`.
+
 ## Data and commands
 
 Download and extract the official VOC2007 archive, then pack it entirely in C:

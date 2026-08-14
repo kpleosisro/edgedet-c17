@@ -1,0 +1,23 @@
+{
+  "name": "EdgeDet C17",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools"
+      ],
+      "settings": {
+        "cmake.configureOnOpen": true
+      }
+    }
+  },
+  "remoteEnv": {
+    "KAGGLE_CONFIG_DIR": "/home/codespace/.kaggle"
+  }
+}
