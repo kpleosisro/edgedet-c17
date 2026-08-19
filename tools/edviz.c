@@ -1,4 +1,5 @@
 #include "ed_internal.h"
+#include "ed_hw.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,10 +82,12 @@ static int write_ppm(const char *path,const uint8_t *rgb,uint32_t w,uint32_t h){
     if(fwrite(rgb,1,(size_t)w*h*3u,f)!=(size_t)w*h*3u){fclose(f);return 0;}return fclose(f)==0;
 }
 int main(int argc,char **argv){
-    const char *dp=arg(argc,argv,"--dataset"),*mp=arg(argc,argv,"--model"),*od=arg(argc,argv,"--output-dir"),*max_text=arg(argc,argv,"--max"),*sp=arg(argc,argv,"--score-threshold"),*np=arg(argc,argv,"--nms-threshold"),*xp=arg(argc,argv,"--tiles-x"),*yp=arg(argc,argv,"--tiles-y");
+    const char *dp=arg(argc,argv,"--dataset"),*mp=arg(argc,argv,"--model"),*od=arg(argc,argv,"--output-dir"),*max_text=arg(argc,argv,"--max"),*sp=arg(argc,argv,"--score-threshold"),*np=arg(argc,argv,"--nms-threshold"),*xp=arg(argc,argv,"--tiles-x"),*yp=arg(argc,argv,"--tiles-y"),*rt=arg(argc,argv,"--runtime");
     uint32_t max_images=24u,i,tiles_x=0u,tiles_y=0u;float score=sp?strtof(sp,NULL):0.25f,nms=np?strtof(np,NULL):0.42f;
     ed_model *m=NULL;ed_dataset *d=NULL;ed_status s;
-    if(!dp||!mp||!od){fprintf(stderr,"usage: edviz --dataset D.edb --model M.edm --output-dir DIR [--max N] [--score-threshold F] [--nms-threshold F] [--tiles-x auto|N]\n");return 2;}
+    if(!dp||!mp||!od){fprintf(stderr,"usage: edviz --dataset D.edb --model M.edm --output-dir DIR [--runtime host|fpga-model] [--max N] [--score-threshold F] [--nms-threshold F] [--tiles-x auto|N]\n");return 2;}
+    if(rt){if(strcmp(rt,"fpga-model")==0){if(ed_runtime_set_compute(ED_COMPUTE_FPGA_MODEL)!=ED_OK)return 2;}
+        else if(strcmp(rt,"host")!=0){fprintf(stderr,"invalid --runtime\n");return 2;}}
     if(max_text)max_images=(uint32_t)strtoul(max_text,NULL,10);
     if(xp&&strcmp(xp,"auto")!=0)tiles_x=(uint32_t)strtoul(xp,NULL,10);if(yp)tiles_y=(uint32_t)strtoul(yp,NULL,10);
     if((s=ed_dataset_load(dp,&d))!=ED_OK||(s=ed_model_load(mp,&m))!=ED_OK){fprintf(stderr,"viz: %s\n",ed_status_string(s));ed_dataset_free(d);ed_model_free(m);return 1;}

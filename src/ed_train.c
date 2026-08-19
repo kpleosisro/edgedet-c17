@@ -1,5 +1,6 @@
 #include "ed_internal.h"
 #include "ed_graph.h"
+#include "ed_hw.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -593,6 +594,7 @@ ed_status ed_train(ed_model *m,const ed_dataset *d,const ed_train_config *c,ed_t
     if(m->class_count!=d->header.class_count)return ED_ERR_FORMAT;
     {uint32_t ci;for(ci=0;ci<m->class_count;++ci)if(strncmp(m->class_names[ci],d->class_names[ci],ED_CLASS_NAME_BYTES)!=0)return ED_ERR_FORMAT;}
     if(ed_runtime_set_threads(c->threads)!=ED_OK)return ED_ERR_MEMORY;
+    if(ed_runtime_compute()==ED_COMPUTE_FPGA_MODEL)return ed_hw_train(m,d,c,r);
     memset(r,0,sizeof(*r));memset(parameters,0,sizeof(parameters));memset(context,0,sizeof(context));memset(spatial,0,sizeof(spatial));memset(quality,0,sizeof(quality));
     if((c->roi_head&&!context_model_add(m))||(c->picofeat_adapter&&!spatial_model_add(m))||(c->quality_adapter&&!quality_model_add(m)))return ED_ERR_MEMORY;
     if(c->roi_head){if(!context_parameter_init(m,context)){context_parameter_free(context);return ED_ERR_MEMORY;}context_ptr=context;}

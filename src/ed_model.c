@@ -1,4 +1,5 @@
 #include "ed_internal.h"
+#include "ed_hw.h"
 #include "ed_graph.h"
 #include <math.h>
 #include <stdlib.h>
@@ -200,6 +201,7 @@ ed_status ed_model_remap_class_heads(ed_model*m,const char*const*names,uint32_t 
 ed_status ed_predict(const ed_model*m,const ed_image*im,float st,float nt,ed_detection_list*out){
     float *input=NULL;ed_activation*a=NULL;ed_detection*candidates=NULL;size_t cand_n=0,cand_cap=4096;uint32_t y,x,c,l;ed_status s;
     if(!m||!im||!out||!out->items||!im->rgb||!im->width||!im->height||st<0||st>1||nt<0||nt>1)return ED_ERR_ARGUMENT;
+    if(ed_runtime_compute()==ED_COMPUTE_FPGA_MODEL)return ed_hw_predict(m,im,st,nt,out);
     if(m->architecture!=ED_ARCH_PICODET_S_320||m->precision!=ED_PRECISION_FP32)return ED_ERR_UNSUPPORTED;
     candidates=(ed_detection*)malloc(cand_cap*sizeof(*candidates));if(!candidates)return ED_ERR_MEMORY;
     s=ed_prepare_input_320(im,&input);if(s!=ED_OK){free(candidates);return s;}

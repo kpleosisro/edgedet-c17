@@ -68,6 +68,18 @@ build/edinfer --model adapted.edm --input image.jpg --threads 12
 `--output-precision fp32|fp16|int8|int4` to choose the final model and timed
 checkpoint storage. FP32 is an explicit opt-in, not the standard workflow.
 
+`--runtime host` (default) is the unchanged FP32 path. `--runtime fpga-model`
+runs integer add/mul/shift kernels plus ROM lookups so the same graph can be
+ported to Verilog. Head-only on-device updates use that integer path. See
+`docs/fpga-datapath.md`. The 3x3 board-test tile lives in `hw/fpga/`.
+
+```sh
+build/edinfer --model adapted.edm --input image.jpg --runtime fpga-model
+build/edeval --dataset val.edb --model adapted.edm --runtime fpga-model \
+  --score-threshold 0.01 --nms-threshold 0.42
+build/edhwtrace --model adapted.edm --input image.jpg --output-dir traces
+```
+
 For a frozen backbone, a short `--budget-ms` (15 s or less) automatically
 forwards 12 augmented mosaics once and reuses those feature maps for 120
 output-head updates at learning rate 0.000125. That is the locked

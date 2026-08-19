@@ -24,6 +24,14 @@ add_library(edgedet STATIC
     src/ed_calibrate.c
     src/ed_train.c
     src/ed_eval.c
+    src/ed_hw_arith.c
+    src/ed_hw_lut.c
+    src/ed_hw_ops.c
+    src/ed_hw_graph.c
+    src/ed_hw_train.c
+    src/ed_space.c
+    src/ed_space_teacher.c
+    src/ed_space_adapt.c
 )
 if(ED_ENABLE_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i.86")
   target_sources(edgedet PRIVATE src/ed_ops_avx2.c)
@@ -61,7 +69,7 @@ else()
   endif()
 endif()
 
-foreach(tool edtrain edeval edinfer edpack-voc edpack-yolo edpack-manifest edremap edcompact edinspect edbench edsplit edviz)
+foreach(tool edtrain edeval edinfer edpack-voc edpack-yolo edpack-manifest edremap edcompact edinspect edbench edsplit edviz edhwcal edhwtrace edspace)
   string(REPLACE "-" "_" target ${tool})
   add_executable(${target} tools/${target}.c)
   target_link_libraries(${target} PRIVATE edgedet)
@@ -77,6 +85,20 @@ if(ED_BUILD_TESTS)
   target_compile_definitions(test_edgedet PRIVATE
     ED_TEST_MODEL_PATH="${CMAKE_SOURCE_DIR}/models/picodet_s_coco80_fp16.edm")
   add_test(NAME edgedet_core COMMAND test_edgedet)
+  add_executable(test_ed_hw tests/test_ed_hw.c)
+  target_link_libraries(test_ed_hw PRIVATE edgedet)
+  target_include_directories(test_ed_hw PRIVATE src)
+  target_compile_definitions(test_ed_hw PRIVATE
+    ED_TEST_MODEL_PATH="${CMAKE_SOURCE_DIR}/models/picodet_s_coco80_fp16.edm")
+  add_test(NAME edgedet_hw COMMAND test_ed_hw)
+  add_executable(ed_mac_tile_tb hw/fpga/ed_mac_tile_tb.c hw/fpga/ed_mac_tile.c)
+  target_link_libraries(ed_mac_tile_tb PRIVATE edgedet)
+  target_include_directories(ed_mac_tile_tb PRIVATE src include hw/fpga)
+  add_test(NAME edgedet_mac_tile COMMAND ed_mac_tile_tb)
+  add_executable(test_ed_space tests/test_ed_space.c)
+  target_link_libraries(test_ed_space PRIVATE edgedet)
+  target_include_directories(test_ed_space PRIVATE src)
+  add_test(NAME edgedet_space COMMAND test_ed_space)
   add_executable(dump_picodet tests/dump_picodet.c)
   target_link_libraries(dump_picodet PRIVATE edgedet)
   target_include_directories(dump_picodet PRIVATE src)
