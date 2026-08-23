@@ -1,4 +1,7 @@
-/build*/
+﻿/build*/
+/output/
+/tmp/
+/internship-report/
 /visualizations/
 /*.edb
 /*.csv
@@ -15,3 +18,4 @@
 .idea/
 .DS_Store
 Thumbs.db
+/artifacts/
